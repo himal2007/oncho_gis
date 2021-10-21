@@ -1,0 +1,266 @@
+---
+title: "Ethiopia prevalence data from ESPEN"
+author: "Himal Shrestha"
+date: "12/03/2021"
+output: 
+  html_document:
+    theme: united
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+---
+
+```{r setup, echo=FALSE}
+knitr::opts_knit$set(root.dir = "C:/Users/user/OneDrive - LA TROBE UNIVERSITY/oncho_git/onchocerciasis/espen_ethiopia_data")
+```
+
+> Changes
+
++ In the previous analysis, if the observations had same geo-graphic coordinate and different years, the observation from previous year was taken. Here, we aim to aggregate the observations.
+
+## Introduction
+The data is obtained from [ESPEN database](https://espen.afro.who.int/tools-resources/download-data)
+
+## Load libraries
+```{r, message=FALSE}
+extrafont::loadfonts(device="win")
+extrafont::fonttable()
+```
+
+```{r}
+suppressMessages({library(sf);
+  library(dplyr);
+  library(ggplot2);
+  library(rgdal);
+  library(leaflet);
+  library(raster);
+  library(RColorBrewer);
+  library(tmap);
+  library(gstat);
+  library(tidyr);
+  })
+```
+
+## Loading the data
+
+```{r}
+eth_prev_site <- read.csv("data/data-ET-oncho-sitelevel.csv")
+eth_prev_iu <- read.csv("data/data-ET-oncho-iu.csv")
+```
+
+```{r}
+eth_st <- getData(name = "GADM", country = "ETH", level = 3)
+eth_st1 <- getData(name = "GADM", country = "ETH", level = 1)
+eth <- eth_st %>% st_as_sf()
+eth1 <- eth_st1 %>% st_as_sf()
+mypalette <- colorRampPalette(rev(brewer.pal(11, "RdYlBu")))
+```
+
+### Site level data
+```{r}
+eth_prev_site_2 <- eth_prev_site %>% dplyr::select(ADMIN1_NAME, ADMIN2_NAME,
+                                                   IU_NAME, IU_ID, LocationName,
+                                                   Longitude, Latitude, 
+                                                   Georeliability, SurveyYear,
+                                                   Period, Year_MDA1, Method_0,
+                                                   Method_2,
+                                                   Examined, Positive, 
+                                                   Prevalence, CMFL)
+eth_prev_site_2 <- eth_prev_site_2 %>% rename(LONG = Longitude,
+                                              LAT = Latitude,
+                                              N = Examined,
+                                              CASES = Positive)
+eth_prev_mf <- eth_prev_site_2 %>% filter(Method_2 == "Parasitology (Skin biopsy)")
+
+eth_prev_nodule <- eth_prev_site_2 %>% filter(Method_2 == "Nodule palpation")
+```
+
++ Find values from the same area
++ `duplicated()` does not return both the observations. It only returns the second observations. 
+```{r}
+find_duplicate <- function(df){
+  i <- duplicated(df[, c("LONG", "LAT")])
+  long_dup <- df[i, ]$LONG
+  lat_dup <- df[i, ]$LAT
+  duplicate_sites <- df %>% filter(LONG %in% long_dup & LAT %in% lat_dup)
+  return(duplicate_sites)
+}
+  
+duplicate_mf <- find_duplicate(df = eth_prev_mf)
+duplicate_nodule <- find_duplicate(df = eth_prev_nodule)
+```
++ ~~For the duplicate nodule data, one data is from 2011 and the other is from 2012. So, for the pre-intervention map. Let's choose the data from 2011.~~
++ We aggregate data if they are reported in both the years. We aggregate all the data irrespective of when it was reported. The REMO data are all mapping data anyway, they were before intervention.
+
+```{r}
+eth_prev_nodule_2 <- group_by(eth_prev_nodule, LONG, LAT, Method_2) %>%  summarize(
+    total = sum(N),
+    positive = sum(CASES),
+    PREV = positive/total
+  )
+eth_prev_nodule_2 <- eth_prev_nodule_2 %>% rename(N = total,
+                                                  CASES = positive)
+eth_prev_nodule_2 %>% find_duplicate()
+
+# write.csv(eth_prev_nodule_2, "data/eth_espen_nodule.csv")
+```
+
++ For skin mf data, the year when the data was taken is not different. Data must be from locations which are very near to each other. I think we can add the observations and aggregate them.
+
+```{r}
+eth_prev_mf_2 <- group_by(eth_prev_mf, LONG, LAT, Method_2) %>%
+  summarize(
+    total = sum(N),
+    positive = sum(CASES),
+    PREV = positive/total
+  )
+eth_prev_mf_2 <- eth_prev_mf_2 %>% rename(N = total,
+                                              CASES = positive)
+
+# write.csv(eth_prev_mf_2, "data/eth_espen_mf.csv")
+```
+
++ Combine nodule data with unique coordinates `eth_prev_nodule_2` and skin mf data `eth_prev_mf_2` with unique coordinates
+
+```{r}
+col_required <- names(eth_prev_mf_2)
+eth_prev_nodule_2 <- eth_prev_nodule_2[, dput(as.character(names(eth_prev_mf_2)))]
+eth_prevalence <- bind_rows(eth_prev_mf_2, eth_prev_nodule_2)
+eth_prevalence <- eth_prevalence %>% dplyr::select(LONG, LAT, PREV, Method_2)
+
+eth_prev_same_site <- find_duplicate(df = eth_prevalence)
+eth_prev_ss_wide <- eth_prev_same_site %>% pivot_wider(names_from = Method_2,
+                                                       values_from = PREV)
+```
+
++ Correlation anlaysis
+```{r}
+library(ggpubr)
+shapiro.test(eth_prev_ss_wide$`Parasitology (Skin biopsy)`)
+shapiro.test(eth_prev_ss_wide$`Nodule palpation`)
+cor.test(eth_prev_ss_wide$`Parasitology (Skin biopsy)`, eth_prev_ss_wide$`Nodule palpation`, method = "spearman")
+
+cor_plot <- ggscatter(eth_prev_ss_wide, y = "Parasitology (Skin biopsy)", 
+          x = "Nodule palpation", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "spearman",
+          ylab = "Skin mf", xlab = "Nodule count",
+          ggtheme = theme_minimal(base_family = "Verdana"))
+cor_plot
+```
++ REMO and skin mf data from the same geographic coordinates were selected for the correlation analysis.
++ The variables did not follow normal distribution. So, spearman rank's correlation test performed.
++ The correlation coefficient was $rho$ = 0.26067 with p-value = 0.08745 which was not statistically significant.
+
+## Investigating the data
+There are two observations which has very high REMO prevalence (>90%) but near to zero mf prevalence seems suspicious.
+```{r}
+eth_prev_ss_wide <- eth_prev_ss_wide %>% rename(REMO = "Nodule palpation") 
+filter(eth_prev_ss_wide, REMO > 0.9) -> outlier_obs
+outlier_site <- eth_prev_site[eth_prev_site$Longitude %in% outlier_obs$LONG, ]
+remove_outlier <- setdiff(eth_prev_ss_wide, outlier_obs) 
+```
+
+```{r}
+cor_plot <- ggscatter(remove_outlier, y = "Parasitology (Skin biopsy)", 
+          x = "REMO", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "spearman",
+          ylab = "Prevalence based on Skin mf (%)", xlab = "Prevalence based on nodule count (%)",
+          ggtheme = theme_minimal(base_family = "Arial",
+                                  base_size = 12))
+cor_plot
+```
+
+### Exclude outlier from the data to be exported
++ `eth_prev_mf_2`
++ `eth_prev_nodule_2`
+
+```{r}
+eth_prev_mf_3 <- eth_prev_mf_2[!eth_prev_mf_2$LONG %in% outlier_obs$LONG, ]
+eth_prev_nodule_3 <- eth_prev_nodule_2[!eth_prev_nodule_2$LONG %in% outlier_obs$LONG, ]
+# write.csv(eth_prev_mf_3, "data/eth_espen_mf.csv")
+# write.csv(eth_prev_nodule_3, "analysis/210723_analysis_writing/data/eth_espen_nodule.csv")
+
+```
+
+
+
+## Visualise the data
+### Prepare data for visualisation
+
++ Collapse the dataframe based on geographic coordinates and the survey year
+```{r}
+d <- group_by(eth_prev_site_2, LONG, LAT, Method_2, SurveyYear) %>%
+  summarize(
+    total = sum(N),
+    positive = sum(CASES),
+    PREV = positive/total
+  )
+```
+
++ There are 927 nodule count data and 166 skin mf data.
+```{r}
+ethiopia <- st_as_sf(x = d, coords = c('LONG','LAT'), crs= "+proj=longlat +datum=WGS84")
+ethiopia_nodule <- ethiopia %>% filter(Method_2 == "Nodule palpation")
+ethiopia_skin_mf <- ethiopia %>% filter(Method_2 == "Parasitology (Skin biopsy)")
+```
+
+```{r}
+tmap_mode("view")
+p1 <- tm_shape(eth1)+
+  tm_sf(alpha = 0.5) +
+  tm_lines()
+
+ethiopia$PREV2 <- ethiopia$PREV + 0.01
+p1 <- p1 + tm_shape(ethiopia) + 
+  tm_bubbles(size = "PREV2", col = "PREV2", alpha = 0.5, border.col = "black", legend.max.symbol.size = 1) +
+  tm_facets(by = "Method_2") +
+  tm_scale_bar() +
+  tm_compass()
+```
+
+
+```{r}
+pal_prev <- colorNumeric("RdYlBu", ethiopia$PREV,
+                    na.color = "transparent", reverse = TRUE)
+map <- leaflet() %>% addTiles() %>%
+  addCircles(data = ethiopia_nodule, fillcolor = ~pal_prev(PREV), 
+             group = "Nodule data", opacity = 0.5, radius = 0.2, stroke = TRUE,
+             popup = paste("Year: ", ethiopia_nodule$SurveyYear, "<br>",
+                           "Prevalence: ", ethiopia_nodule$PREV)) %>%
+  addCircles(data = ethiopia_skin_mf, color = ~pal_prev(PREV), 
+             group = "Skin mf data", opacity = 0.5, radius = 0.2, stroke = TRUE,
+             popup = paste("Year: ", ethiopia_skin_mf$SurveyYear, "<br>",
+                           "Prevalence: ", ethiopia_skin_mf$PREV)) %>%
+  addLayersControl(overlayGroups = c("Nodule data", "Skin mf data"),
+                   options = layersControlOptions(collapsed = FALSE)) %>%
+  addLegend(position = "bottomright", pal = pal_prev, values = ethiopia$PREV,
+            title = "Prevalence", opacity = 1)
+```
+Variogram analysis
+
+```{r}
+coordinates(data) <- ~LONG + LAT
+proj4string(data) <- CRS("+proj=longlat +datum=WGS84")
+trans_crs <- CRS("+proj=longlat +zone=36 +south +ellps=clrk80 +units=m +no_defs")
+
+eth_prev <- spTransform(data, trans_crs)
+
+eth_prev <- eth_prev[-zerodist(eth_prev)[, 1], ]
+
+## fitting a variogram
+gs <- gstat(formula = PREV ~ 1, locations = ethiopia_nodule)
+gs <- gstat(formula = PREV ~ 1, locations = ethiopia_skin_mf)
+v <- variogram(gs, width = 20)
+head(v)
+plot(v)
+
+fve <- fit.variogram(v, vgm(c("Sph", "Exp", "Mat")), fit.kappa = TRUE)
+fve
+plot(variogramLine(fve, 1000), type = "l", ylim = c(0, .03))
+points(v[, 2:3], pch = 20, col = "red")
+
+plot(v, fve)
+```
+
