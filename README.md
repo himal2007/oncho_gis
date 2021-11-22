@@ -1,4 +1,4 @@
 # oncho_gis
 Files related to geospatial modelling of onchocerciasis.
 
-This is uploaded to github.
+This will be uploaded to github after publication.
