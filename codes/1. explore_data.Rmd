@@ -1,0 +1,143 @@
+---
+title: "Exploring prevalence data and the environmental data"
+author: "Himal Shrestha"
+date: "22/12/2021"
+output: 
+  md_document:
+    variant: markdown_github
+    toc: yes
+    toc_depth: 4
+---
+
+```{r setup, echo=FALSE}
+knitr::opts_knit$set(root.dir = "C:/Users/User/OneDrive - LA TROBE UNIVERSITY/oncho_git/oncho_gis")
+```
+
+## Introduction
+This script can be used for following purpose:
+1. Visualising raw prevalence data along with the map of Ethiopia
+2. Visualise environmental data
+3. Extract environmental data for each data points
+4. Explore environmental data for correlation - Round I selection of environmental variables
+
+## Load libraries
+```{r, message=FALSE, error=FALSE, tidy=TRUE, warning=FALSE}
+extrafont::loadfonts(device="win")
+```
+
+```{r, message=FALSE, error=FALSE, tidy=TRUE, warning=FALSE}
+suppressMessages({library(sf);
+  library(dplyr);
+  library(ggplot2);
+  library(rgdal);
+  library(leaflet);
+  library(raster);
+  library(RColorBrewer);
+  library(tmap);
+  library(gstat);
+  library(tidyr);
+  library(rasterVis);
+  library(cowplot);
+  })
+```
+
+## Loading the data
+```{r}
+# prevalence data
+data <- read.csv("data/eth_espen_nodule_prev.csv")
+data$prevalence <- data$CASES/data$N *100
+
+# Ethiopia border level 0 - country level
+m_0 <- getData(name = "GADM", country = "ETH", level = 0)
+m_0_sf <- m_0 %>% st_as_sf()
+
+# Ethiopia border level 1 - region level
+m_1 <- getData(name = "GADM", country = "ETH", level = 1)
+m_1_sf <- m_1 %>% st_as_sf()
+```
+
+## Visualize prevalence data on a map
+```{r}
+mypalette <- colorRampPalette(rev(brewer.pal(11, "RdYlBu")))
+
+# raw prevlaence data on a map
+prev <- ggplot(m_1_sf) +
+  geom_sf()+ coord_sf(datum = sf::st_crs(4326))+
+  geom_point(data = data, aes(LONG, LAT, fill = prevalence), color = "black", size = 1.25, stroke = .5, shape = 21, alpha = .7)+ # plotting points with stroke
+  theme_bw(base_family = "Verdana") +
+  scale_fill_gradientn(colours = mypalette(100)) +
+  xlab("Logitude") + ylab("Latitude") + labs(fill = "Nodule prevalence (%)") + theme(legend.position = "bottom", legend.key.size = unit(2, 'cm'),
+                                                                                     #change legend key size
+        legend.key.height = unit(.25, 'cm'), #change legend key height
+        legend.key.width = unit(1, 'cm'))
+
+prev
+
+# prevalence histogram
+prev_hist <- qplot(data$prevalence) + xlab("Nodule prevalence (%)") + ylab("Frequency") + theme_bw(base_family = "Verdana", base_size = 16)
+
+prev_hist
+```
+
+
+## Visualise covariate rasters
+
+```{r}
+load("data/selected_covs_files_1km.RData")
+varlist <- c("slope", "precp_seasonality")
+pred_data <- raster::aggregate(selected_covariates[[varlist]], fact = 5, fun = mean, na.rm = TRUE)
+```
+
++ Thanks to the solution from [stack overflow](https://stackoverflow.com/questions/33227182/how-to-set-use-ggplot2-to-map-a-raster)
+
+#### Slope
+```{r, warning=FALSE}
+colr <- colorRampPalette((brewer.pal(9, 'YlOrRd')))
+r <- pred_data$slope
+my.at <- seq(0, 40, 5)
+slope <- levelplot(r, 
+          margin=FALSE, xlab = NULL,
+          ylab = NULL,
+          main = "Slope",
+          colorkey=list(
+            space='bottom',                   
+            labels=list(at=my.at, font=1, height = 0.1), height = 1, width = 0.8,
+            axis.line=list(col='black')       
+          ),    
+          par.settings=list(
+            axis.line=list(col='transparent') 
+          ),
+          scales=list(draw=FALSE),            
+          col.regions=colr,                   
+          at=seq(0, 40, len=101)) +           
+  latticeExtra::layer(sp.polygons(m, lwd=1))   
+```
+
+#### Precipitation seasonality
+```{r}
+colr <- colorRampPalette((brewer.pal(9, 'PiYG')))
+r <- pred_data$precp_seasonality
+my.at <- seq(0, 155, 25)
+prec_seas <- levelplot(r, 
+          margin=FALSE, xlab = NULL,
+          ylab = NULL,
+          main = "Precipitation seasonality",
+          colorkey=list(
+            space='bottom',                   
+            labels=list(at=my.at, font=1, height = 0.1), height = 1, width = 0.8,
+            axis.line=list(col='black')       
+          ),    
+          par.settings=list(
+            axis.line=list(col='transparent') 
+          ),
+          scales=list(draw=FALSE),            
+          col.regions=colr,                   
+          at=seq(0, 155, len=101)) +           
+  latticeExtra::layer(sp.polygons(m_0, lwd=1))  
+```
+
+```{r}
+covariate_stack <- plot_grid(prec_seas, slope, labels = "AUTO", nrow = 1)
+covariate_stack
+```
+

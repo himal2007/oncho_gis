@@ -1,0 +1,395 @@
+---
+title: "Validation statistics from the best model using k fold cross validation"
+author: "Himal Shrestha"
+date: "14/05/2021"
+output: 
+  html_document:
+    theme: united
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+---
+
+```{r setup, echo=FALSE}
+knitr::opts_knit$set(root.dir = "C:/Users/19226876/OneDrive - LA TROBE UNIVERSITY/oncho_git/onchocerciasis/espen_ethiopia_data/analysis/210723_analysis_writing")
+```
+
+## Introduction
+ + Model cross validation: k-fold cross validation (5-fold, 10-fold, 20-fold CV)
+    + Correlation coefficient
+    + RMSE
+    
+
+## Load libraries
+```{r, message=FALSE}
+extrafont::loadfonts(device="win")
+extrafont::fonttable()
+```
+
+```{r}
+packages <- c("tidyverse", "INLA", "INLAutils", "raster", "sf", "dplyr",
+              "tictoc", "leaflet", "GGally", "devtools", "sp", "cowplot", "ggpubr")
+
+# if(length(setdiff(packages, rownames(installed.packages()))) > 0) { 
+#   install.packages(setdiff(packages, rownames(installed.packages()))) }
+# 
+# #For INLA!!
+# if(length(setdiff("INLA", rownames(installed.packages()))) > 0){
+#   install.packages("INLA", repos=c(getOption("repos"), INLA="https://inla.r-inla-download.org/R/stable"), dep=TRUE)
+# }
+```
+
+```{r}
+lapply(packages, require, character.only = TRUE)
+```
+
+## Loading the data
+
+```{r}
+load("data/selected_covs_files_1km.RData")
+# selected_covs <- data_list[[2]]
+data <- eth_prev2
+data$PREV <- data$CASES/data$N * 100
+m <- getData(name = "GADM", country = "ETH", level = 0)
+```
+
+### Custom functions
+```{r}
+stack_data <- function(data, dp, cov_list){
+  # stack for estimation stk.e
+  df <- data.frame(Intercept = 1, subset(data, select = cov_list))
+  stk.e <- inla.stack(
+    tag = "est",
+    data = list(y = data$CASES, numtrials = data$N),
+    A = list(1, Ae),
+    effects = list(df, spatial.field = iset)
+  )
+  
+  # stack for prediction stk.p
+  df_p <- data.frame(Intercept = 1, subset(dp, select = cov_list))
+  stk.p <- inla.stack(
+    tag = "pred",
+    data = list(y = dp$CASES, numtrials = dp$N),
+    A = list(1, Ap),
+    effects = list(df_p, spatial.field = iset))
+  
+  # stk.full has stk.e and stk.p
+  stk.full <- inla.stack(stk.e, stk.p)
+  
+  return(stk.full)
+}
+
+varlist <- c("slope", "isothermality", "precp_seasonality", "NDVI_2003_11",
+             "dist_river_DIVA", "Flow_accumulation",
+             "Soil_moisture", "Population_density")
+
+```
+
+
+```{r}
+formula0 <- as.formula(paste("y ~ 0 + Intercept +", paste(varlist, collapse =  "+"), "+ f(spatial.field, model = spde)"))
+formula1 <- as.formula(paste("y ~ 0 + Intercept +", paste(varlist[!varlist %in% c("Flow_accumulation", "Soil_moisture")], collapse =  "+"), "+ f(spatial.field, model = spde)"))
+formula2 <- as.formula("y ~ 0 + Intercept + f(spatial.field, model = spde)")
+
+data$observed <- data$CASES
+
+### Mesh construction
+coords <-  cbind(data$LONG, data$LAT)
+bdry <- inla.sp2segment(m)
+bdry$loc <- inla.mesh.map(bdry$loc)
+mesh1 <- inla.mesh.2d(
+  loc = coords, boundary = bdry, 
+  max.edge = c(0.5, 5),
+  cutoff = 0.03
+)
+
+# Spde and spatial field
+spde <- inla.spde2.matern(mesh1, alpha=2)
+iset <- inla.spde.make.index(name = "spatial.field", spde$n.spde)
+```
+
+
+### Model validation
++ Output RMSE and correlation ceofficient
++ Output validation data with observed and predicted values
+```{r}
+library(dismo)
+fold <- 10 # specify fold
+model <- 2 # specify model
+variables = 2
+pb = txtProgressBar(min = 0, max = fold, initial = 0) 
+output <- matrix(ncol=variables, nrow=fold)
+colnames(output) <- c("RMSE", "Correlation-coefficient")
+output <- data.frame(output)
+
+set.seed(12345)
+kf <- kfold(nrow(data), k = fold)
+
+old <- Sys.time()
+for(i in 1:fold) {
+  test <- data[kf == i, ]
+  train <- data[kf != i, ]
+  test$CASES <- NA  #make the y values for test NA
+  test_coords <- coords[kf == i,]
+  train_coords <- coords[kf != i,]
+  Ae <- inla.spde.make.A(mesh=mesh1,loc=as.matrix(train_coords));dim(Ae)
+  Ap <- inla.spde.make.A(mesh = mesh1, loc = test_coords);dim(Ap)
+  stk.full <- stack_data(data = train, dp = test, cov_list = selected_covs)
+  inla.setOption(num.threads = 8)
+  p.res <- inla(formula2,
+            family = "zeroinflated.binomial.1", Ntrials = numtrials,
+            data = inla.stack.data(stk.full, spde = spde),
+            control.family = list(link = "logit"),
+            control.compute = list(dic = TRUE, waic = TRUE,
+                                   cpo = TRUE, config = TRUE,
+                                   openmp.strategy="huge"),
+            control.predictor = list(
+              compute = TRUE, link = 1,
+              A = inla.stack.A(stk.full)
+            )
+  )
+  index.pred <- inla.stack.index(stk.full, "pred")$data
+  obs_prev <- test$PREV #this is the number pos/number examined
+  tmp.mean <- p.res$summary.fitted.values[index.pred, "mean"]
+  tmp.mean <- tmp.mean * 100
+  tmp.sd = p.res$summary.fitted.values[index.pred,"sd"]
+  validation = list()
+  validation$res = obs_prev - tmp.mean 
+  validation$rmse = sqrt(mean(validation$res^2, na.rm=TRUE)) 
+  validation$cor = cor(obs_prev, tmp.mean, 
+                       use="pairwise.complete.obs",
+                       method="spearman")
+  output[i, ] <- c(validation$rmse, validation$cor)
+  
+  if(i == 1){
+      object_cor <- data.frame(fold = i, tmp.mean, obs_prev)
+    }
+    else{
+      object_cor <- bind_rows(object_cor, data.frame(fold = i, tmp.mean, obs_prev))
+    }
+    setTxtProgressBar(pb,i)
+    cat("\nIteration = ", i, "\n")
+    print(Sys.time() - old)
+}
+
+# write.csv(output, paste0("data/validation_stats_", "model_",model, "_", "fold_", fold,".csv"))
+# write.csv(object_cor, paste0("data/obs_pred_val_","model_",model, "_", "fold_", fold,".csv"))
+
+val_stats <- data.frame(RMSE = mean(output$RMSE), Corr_coff = mean(output$Correlation.coefficient))
+# write.csv(val_stats, "docs/valid_cor.csv")
+save(output, object_cor, val_stats, file = "docs/validation_stats.RData")
+
+load("docs/validation_stats.RData")
+```
+
++ This is the script to run k fold cross-validation for different `k`.
++ The output that we are interested in are:
+1. `output` - dataframe with RMSE and R-squared values
+2. `object_cor` - dataframe with observed and predicted values with highest Correlation coefficients
+
+### Comparison between three different models
++ `formula0`, `formula1`, `formula2`
+
+```{r}
+output_combined <- output_combined %>% mutate(model = as_factor(model))
+output_combined$model_names <- rep(c("Model 1", "Model 2", "Model 0"), each = 10)
+output_combined <- output_combined %>% mutate(model_names = as_factor(model_names))
+
+
+object_cor_combined <- object_cor_combined %>% mutate(model = as_factor(model))
+object_cor_combined <- object_cor_combined %>% add_column(model_names = rep(c("Model 1", "Model 2", "Model 0"), each = 917)) %>% mutate(model_names = as_factor(model_names))
+
+# save(output_combined, object_cor_combined, file = "docs/210910_combined_validation_stats.RData")
+load("docs/210910_combined_validation_stats.RData")
+```
+
+#### Plot RMSE and correlation coefficient
+```{r}
+library(forcats)
+
+cor_coff <- output_combined %>% mutate(model_names = fct_reorder(model_names, Correlation.coefficient)) %>% 
+  ggplot( aes(x=model_names, y=Correlation.coefficient, fill = model_names, alpha = 0.7)) +
+    geom_boxplot(outlier.shape = NA, width = 0.6) +
+    geom_point(shape = 21, fill = "white", color = "black", size = 2, alpha = 0.5) + #geom_jitter(color="black", size=2, alpha=0.9) +
+    theme_bw(base_family = "Verdana") +
+    theme(
+      legend.position="none",
+      plot.title = element_text(size=11)
+    ) +
+    xlab("Models") + ylab("Correlation coefficient") + ylim(c(0.3,.8))
+
+RMSE <- output_combined %>% mutate(model_names = fct_reorder(model_names, RMSE, .desc = T)) %>% 
+  ggplot( aes(x=model_names, y=RMSE, fill = model_names, alpha = 0.7)) +
+    geom_boxplot(outlier.shape = NA, width = 0.6) +
+    geom_point(shape = 21, fill = "white", color = "black", size = 2, alpha = 0.5) + #geom_jitter(color="black", size=2, alpha=0.9) +
+    theme_bw(base_family = "Verdana") +
+    theme(
+      legend.position="none",
+      plot.title = element_text(size=11)
+    ) +
+    xlab("Models") + ylab("RMSE") + ylim(c(8,16))
+
+CV_plot <- plot_grid(cor_coff, RMSE, nrow = 1, labels = "AUTO")
+
+ggsave(plot = CV_plot, filename = "docs/model_comarison.png", device = "png", dpi = 1000, width = 7, height = 5, units = "in" )
+
+```
+
+
+```{r}
+object_cor$abs_difference <- abs(object_cor$obs_prev - object_cor$tmp.mean)
+object_cor$abs_difference <- object_cor$abs_difference %>% GGally::rescale01()
+
+library(RColorBrewer)
+mypalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+
+p <- ggplot(object_cor) +
+  geom_point(mapping = aes(obs_prev, tmp.mean, col = abs_difference)) +
+  geom_abline(slope=1, intercept=0, linetype = "dashed") +
+  scale_color_gradientn(colours = mypalette(100)) + 
+  theme_bw(base_family = "Verdana") +
+  xlab("Observed prevalence(%)") +
+  ylab("Predicted prevalence (%)") + labs(color = "Absolute error") +
+  theme(legend.position = "bottom", legend.key.size = unit(1, 'cm'),                                                                       #change legend key size
+        legend.key.height = unit(.5, 'cm'), #change legend key height
+        legend.key.width = unit(2, 'cm')) 
+p
+# ggsave(plot = p, filename = "docs/valid_cor.png", device = "png", dpi = 1000, width = 5, height = 5, units = "in" )
+
+```
+#### Plot RMSE and Cor.Coeff for k-fold cross validation
+```{r}
+library(hrbrthemes)
+output_long <- output %>% pivot_longer(cols = c("RMSE", "Correlation.coefficient"),
+               names_to = "validation_stats",
+               values_to = "values") %>% mutate(validation_stats = as_factor(validation_stats))
+levels(output_long$validation_stats) <- c("Root Mean Squared Error", "Correlation coefficient")
+
+RMSE <- output_long %>% filter(validation_stats == "Root Mean Squared Error") %>% 
+  ggplot(aes(x=validation_stats, y=values, fill = "blue")) +
+    geom_violin() +
+    geom_point(shape = 21, fill = "white", color = "black", size = 2, alpha = 0.5)+
+    viridis::scale_fill_viridis(discrete = T, alpha=0.4) +
+    #geom_jitter(color="black", size=0.4, alpha=0.9) +
+    theme_ipsum_pub(base_family = "Verdana") +
+    theme(
+      legend.position="none",
+      plot.title = element_text(size=11)
+    ) +
+    xlab("") + ylab("") + ylim(c(8,16)) + coord_flip()
+
+cor_coff <- output_long %>% filter(validation_stats != "Root Mean Squared Error") %>% 
+  ggplot( aes(x=validation_stats, y=values, fill = "red")) +
+    geom_violin() +
+    geom_point(shape = 21, fill = "white", color = "black", size = 2, alpha = 0.5) + #geom_jitter(color="black", size=2, alpha=0.9) +
+    theme_ipsum_pub(base_family = "Verdana") +
+    theme(
+      legend.position="none",
+      plot.title = element_text(size=11)
+    ) +
+    xlab("") + ylab("") + ylim(c(0.3,.8)) + coord_flip()
+
+CV_plot <- plot_grid(cor_coff, RMSE, nrow = 2)
+
+ggsave(plot = CV_plot, filename = "docs/CV_plot.png", device = "png", dpi = 1000, width = 5, height = 3, units = "in" )
+```
+
+
+## Look at the distribution of different validation sets
+```{r}
+data$fold <- kf
+
+ggplot(data) +
+  geom_histogram(aes(PREV)) + facet_wrap(~fold) 
+```
+
+## Draw the box plot and correlation grid plots
++ Get the output
+
++ Functions for reformatting the data
+```{r}
+reformat_data <- function(vstats_edit, fold, candidate){
+  vstats_edit$X <- NULL
+  vstats_edit$fold <- fold
+  vstats_edit$candidate <- candidate
+  return(vstats_edit)
+}
+```
+
++ Candidate 1
+```{r}
+vstats_1_5 <- read.csv("normalised_raster_analysis/output/validation_stats_model_1_fold_5.csv")
+vstats_1_5 <- reformat_data(vstats_edit = vstats_1_5, fold = "5-fold", candidate = "candidate-1")
+vstats_1_10 <- read.csv("normalised_raster_analysis/output/validation_stats_model_1_fold_10.csv")
+vstats_1_10 <- reformat_data(vstats_edit = vstats_1_10, fold = "10-fold", candidate = "candidate-1")
+vstats_1_20 <- read.csv("normalised_raster_analysis/output/validation_stats_model_1_fold_20.csv")
+vstats_1_20 <- reformat_data(vstats_edit = vstats_1_20, fold = "20-fold", candidate = "candidate-1")
+```
+
++ Candidate 2
+```{r}
+vstats_2_5 <- read.csv("normalised_raster_analysis/output/validation_stats_model_2_fold_5.csv")
+vstats_2_5 <- reformat_data(vstats_edit = vstats_2_5, fold = "5-fold", candidate = "candidate-2")
+vstats_2_10 <- read.csv("normalised_raster_analysis/output/validation_stats_model_2_fold_10.csv")
+vstats_2_10 <- reformat_data(vstats_edit = vstats_2_10, fold = "10-fold", candidate = "candidate-2")
+vstats_2_20 <- read.csv("normalised_raster_analysis/output/validation_stats_model_2_fold_20.csv")
+vstats_2_20 <- reformat_data(vstats_edit = vstats_2_20, fold = "20-fold", candidate = "candidate-2")
+```
+
+```{r}
+vstats <- bind_rows(vstats_1_5, vstats_1_10, vstats_1_20, vstats_2_5, vstats_2_10, vstats_2_20) %>% mutate(fold = as_factor(fold), candidate = as_factor(candidate)) %>%
+  pivot_longer(cols = c("RMSE", "Correlation.coefficient"),
+               names_to = "validation_stats",
+               values_to = "values") %>% mutate(validation_stats = as_factor(validation_stats))
+
+```
+
+### Plot the box 
+```{r}
+correlation_coef <- ggplot(vstats %>% filter(validation_stats == "Correlation.coefficient"), aes(x=fold, y=values, fill = candidate)) + 
+  geom_boxplot(width = .4, alpha = .5, outlier.size = 2, show.legend = TRUE) + theme_bw(base_family = "Verdana", base_size = 14) +
+  labs(x = "Validation sets", y = expression("Correlation coefficent, "~rho),
+       fill = "Models") +
+  theme(legend.position = "bottom")# + geom_jitter(width = .1)
+
+RMSE_plot <- ggplot(vstats %>% filter(validation_stats == "RMSE"), aes(x=fold, y=values, fill = candidate)) + 
+  geom_boxplot(width = .4, alpha = .5, outlier.size = 2, show.legend = TRUE) + theme_bw(base_family = "Verdana", base_size = 14) +
+  labs(x = "Validation sets", y = "RMSE", fill = "Models") + theme(legend.position = "bottom") # + geom_jitter(width = .1)
+
+```
+```{r}
+cowplot::plot_grid(correlation_coef, RMSE_plot, labels = c("A", "B"), ncol = 2, rel_heights = c(1.2, 1))
+```
+
+### Correlation plot
+```{r}
+corr_10 <- read.csv("output/obs_pred_val_10.csv")
+corr_20 <- read.csv("output/obs_pred_val_20.csv")
+corr_30 <- read.csv("output/obs_pred_val_30.csv")
+corr_40 <- read.csv("output/obs_pred_val_40.csv")
+
+corr_10$hold_out <- "10%"
+corr_20$hold_out <- "20%"
+corr_30$hold_out <- "30%"
+corr_40$hold_out <- "40%"
+
+corr_data <- bind_rows(corr_10, corr_20, corr_30, corr_40) %>% mutate(X = NULL, hold_out = as_factor(hold_out)) %>% rename(pred_prev = tmp.mean)
+```
+
+```{r}
+p <- ggplot(corr_data, aes(x=obs_prev, y=pred_prev)) + 
+  geom_point(shape = 21, colour = "black", fill = "white", size = 1, stroke = 1, alpha = .5)+
+  geom_abline(intercept = 0, slope = 1, linetype="dashed",
+              color="blue") +
+  ggpubr::stat_cor(method = "spearman", label.y = 60, aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~"))) +
+  facet_wrap(~hold_out, scales = "free_x") +
+  ylab("Predicted Prevalence (%)") +
+  xlab("Observed Prevalence (%)")+
+  theme(legend.position="none",
+        legend.title = element_blank(),
+        legend.text = element_blank(),
+        aspect.ratio = 1) +
+  theme_bw(base_family = "Verdana", base_size = 14)
+
+```
+
