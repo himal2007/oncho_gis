@@ -15,9 +15,13 @@ knitr::opts_knit$set(root.dir = "C:/Users/User/OneDrive - LA TROBE UNIVERSITY/on
 
 ## Introduction
 This script can be used for following purpose:
+
 1. Visualising raw prevalence data along with the map of Ethiopia
+
 2. Visualise environmental data
+
 3. Extract environmental data for each data points
+
 4. Explore environmental data for correlation - Round I selection of environmental variables
 
 ## Load libraries
@@ -38,6 +42,10 @@ suppressMessages({library(sf);
   library(tidyr);
   library(rasterVis);
   library(cowplot);
+  library(climateStability);
+  library(car);
+  library(GGally);
+  library(data.table);
   })
 ```
 
@@ -90,7 +98,7 @@ pred_data <- raster::aggregate(selected_covariates[[varlist]], fact = 5, fun = m
 
 + Thanks to the solution from [stack overflow](https://stackoverflow.com/questions/33227182/how-to-set-use-ggplot2-to-map-a-raster)
 
-#### Slope
+### Slope
 ```{r, warning=FALSE}
 colr <- colorRampPalette((brewer.pal(9, 'YlOrRd')))
 r <- pred_data$slope
@@ -110,10 +118,10 @@ slope <- levelplot(r,
           scales=list(draw=FALSE),            
           col.regions=colr,                   
           at=seq(0, 40, len=101)) +           
-  latticeExtra::layer(sp.polygons(m, lwd=1))   
+  latticeExtra::layer(sp.polygons(m_0, lwd=1))   
 ```
 
-#### Precipitation seasonality
+### Precipitation seasonality
 ```{r}
 colr <- colorRampPalette((brewer.pal(9, 'PiYG')))
 r <- pred_data$precp_seasonality
@@ -140,4 +148,179 @@ prec_seas <- levelplot(r,
 covariate_stack <- plot_grid(prec_seas, slope, labels = "AUTO", nrow = 1)
 covariate_stack
 ```
+
+## Extract environmental values for sample locations
+
+```{r}
+covariates <- stack("data/covariates_1_km.grd")
+```
+
+
+```{r}
+# Extract the data from the raster--------------------------------------------------------
+covs <- raster::extract(covariates, data[c("LONG","LAT")], na.rm = TRUE, df = TRUE)
+
+data_c_covs <- as.data.frame(cbind(data, covs))
+# data_c_covs <- na.omit(data_c_covs)
+data_c_covs %>% head()
+```
+
+## Initial selection of environmental variables
+
++ Grouping data into related variables
+  1. Temperature
+  2. Precipitation
+  3. Vegetation indices
+  4. Hydrological data
+  5. Socio-demographic data
+
+```{r}
+data_c_covs[, c("N", "CASES", "LONG", "LAT", "ID")] <- NULL
+temp_covariates <- c(names(data_c_covs)[2:12], "prevalence")
+temp_data <- data_c_covs[, temp_covariates]
+
+precip_covariates <- c(names(data_c_covs)[13:20], "prevalence")
+precip_data <- data_c_covs[, precip_covariates]
+
+elev_data <- data_c_covs[, c("alt", "slope", "prevalence")]
+vegind_data <- data_c_covs[, c("EVI_2003_11", "NDVI_2003_11", "prevalence")]
+hydro_data <- data_c_covs[, c("drain_direction", "Flow_accumulation", "dist_river_DIVA", "Soil_moisture", "prevalence")]
+sociodem_data <- data_c_covs[, c("Population_density",
+                          "night_lights", "mean_housing_2000_15", "prevalence")]
+```
+
++ Custom functions
+```{r}
+to_long <- function(data){
+  data2 <- data %>% pivot_longer(-prevalence, names_to = "covariates", values_to = "values")
+  return(data2)
+}
+```
+
+### Temperature variables
+```{r, warning=FALSE}
+temp_data_long <- to_long(data = temp_data)
+
+temp_data$temp_annual_range <- NULL
+model1 <- lm(prevalence ~., data = temp_data)  ## `temp_annual_range` is showing problem in the model due to multi-collinearity
+vif(model1)
+alias(model1)  # use this to check which which covariates are perfectly correlated
+```
+
+```{r}
+ggpairs(temp_data[, 1:ncol(temp_data)-1])
+```
++ Based on the pairs plot except `annual_diurnal_range`, `temp_seasonality`, `isothermality`, all others are correlated with each other. We need to choose one covariate out of those correlated ones. `meantemp_wettestquart` selected because of low VIF.
+
+```{r}
+temp_covs_2 <- c("annual_diurnal_range", "temp_seasonality", "isothermality", 
+                 "meantemp_wettestquart")
+temp_data_covs2 <- data_c_covs[, c(temp_covs_2, "prevalence")]
+summary(temp_model2 <- lm(prevalence~., data = temp_data_covs2))
+vif(temp_model2)
+```
+
+### Precipitation
+
+```{r}
+precip_data_long <- to_long(data = precip_data)
+precip_model1 <- lm(prevalence ~., data = precip_data);  # summary(precip_model1)
+vif(precip_model1)
+p <- ggpairs(precip_data[, 1:ncol(precip_data)-1])
+p
+```
++ Least correlated variables are:
+      + Precipitation warmest quarter
+      + Precipitation coldest quarter
+      + Annual Precipitation, Precipitation Wettest Quarter, Precipitation Wettest Month - Precipitation Wettest Quarter selected based on VIF
+      + Precipitation Driest Month, Precipitation Driest Quarter and Precipitation Seasonality - Precipitation Seasonality selected
+```{r}
+precip_covs_2 <- c("precp_wettest_quart", "precp_seasonality", "precp_warmest_quart", 
+                 "precp_coldest_quarter")
+precip_data_covs2 <- data_c_covs[, c(precip_covs_2, "prevalence")]
+summary(precip_model2 <- lm(prevalence~., data = precip_data_covs2))
+vif(precip_model2)
+```
+
+### Elevation data
+```{r}
+elev_data_long <- to_long(data = elev_data)
+elev_model1 <- lm(prevalence ~., data = elev_data);  # summary(elev_model1)
+vif(elev_model1)
+p <- ggpairs(elev_data[, 1:ncol(elev_data)-1])
+p
+```
++ `alt` and `slope` selected
+
+### Vegetation indices
+```{r}
+vegind_data_long <- to_long(data = vegind_data)
+
+vegind_model1 <- lm(prevalence ~., data = vegind_data);  # summary(vegind_model1)
+vif(vegind_model1)
+p <- ggpairs(vegind_data[, 1:ncol(vegind_data)-1])
+p
+```
++ The range of `EVI` does not seem to be correct. `NDVI` selected.
+
+### Hydrological data
+```{r}
+hydro_data_long <- to_long(data = hydro_data)
+hydro_model1 <- lm(prevalence ~., data = hydro_data);  # summary(hydro_model1)
+vif(hydro_model1)
+p <- ggpairs(hydro_data[, 1:ncol(hydro_data)-1])
+p
+```
++ `drain direction` not selected while all other selected.
+
+### Sociodemographic data
+```{r}
+sociodem_data_long <- to_long(data = sociodem_data)
+sociodem_model1 <- lm(prevalence ~., data = sociodem_data);  # summary(sociodem_model1)
+vif(sociodem_model1)
+p <- ggpairs(sociodem_data[, 1:ncol(sociodem_data)-1])
+p
+```
+
++ All the covariates selected.
+
+## Selected covariates
++ Altogether 17 covariates were selected
+```{r}
+selected_covs <- c("alt", "annual_diurnal_range", "isothermality", "temp_seasonality", "meantemp_wettestquart",
+                   "precp_wettest_quart", "precp_seasonality", "precp_warmest_quart",
+                   "precp_coldest_quarter", "NDVI_2003_11",
+                   "dist_river_DIVA", "Flow_accumulation",
+                   "slope", "Soil_moisture", "night_lights", "mean_housing_2000_15")
+
+selected_covs_data <- data_c_covs[, c(selected_covs, "prevalence")]
+
+selected_covs_data_long <- to_long(data = selected_covs_data)
+selected_covs_model1 <- lm(prevalence ~., data = selected_covs_data);  # summary(selected_covs_model1)
+vif(selected_covs_model1)
+p_corr2 <- ggcorr(selected_covs_data[, 1:ncol(selected_covs_data)-1], palette = "RdBu", label = TRUE)
+p_corr2
+```
++ altitude and mean temperature wettest quarter are inversely related. Altitude selected as a variable of interest.
++ Isothermality and temperature seasonality are correlated, isothermality selected based on VIF
+
+```{r}
+selected_covs <- c("alt", "annual_diurnal_range", "isothermality",
+                   "precp_wettest_quart", "precp_seasonality", "precp_warmest_quart",
+                   "precp_coldest_quarter", "NDVI_2003_11",
+                   "dist_river_DIVA", "Flow_accumulation",
+                   "slope", "Soil_moisture", "Population_density", "night_lights", "mean_housing_2000_15")
+selected_covs_data <- data_c_covs[, c(selected_covs, "prevalence")]
+selected_covs_model1 <- lm(prevalence ~., data = selected_covs_data); 
+vif(selected_covs_model1)
+```
+
+```{r}
+selected_covs_data_2 <- selected_covs_data %>% as.data.table()
+col_names <- c("ELV","ADR", "IST", "PWTQ", "PST","PWMQ", "PCQ","NDVI","DTR","FAC","SLP","SLM","PDT", "NLT", "PHI", "PREV")
+selected_covs_data_2 <- selected_covs_data_2 %>% setnames(col_names) %>% data.frame()
+p_corr2 <- ggcorr(selected_covs_data_2[, 1:ncol(selected_covs_data_2)-1], palette = "RdBu", label = TRUE)
+p_corr2
+```
+
 
