@@ -1,0 +1,486 @@
+---
+title: "Model Selection and Fitting"
+author: "Himal Shrestha"
+date: "22/12/2021"
+output: 
+  md_document:
+    variant: markdown_github
+    toc: yes
+    toc_depth: 4
+---
+
+```{r setup, echo=FALSE}
+knitr::opts_knit$set(root.dir = "C:/Users/User/OneDrive - LA TROBE UNIVERSITY/oncho_git/oncho_gis")
+```
+
+## Introduction
+This script can be used for following purpose:
+
+1. Running the best model using INLA
+
+2. Prediction using the model to create predicted prevalence map across Ethiopia
+
+3. Creating uncertainty bivariate map
+
+4. Aggregated map based on health districts
+
+5. Relationship profile between environmental variables and the predicted prevalence
+
+## Load libraries
+```{r, message=FALSE, error=FALSE, tidy=TRUE, warning=FALSE}
+extrafont::loadfonts(device="win")
+```
+
+```{r, message=FALSE, error=FALSE, tidy=TRUE, warning=FALSE}
+suppressMessages({library(tidyverse);
+  library(INLA);
+  library(INLAutils);
+  library(raster);
+  library(sf);
+  library(dplyr);
+  library(tictoc);
+  library(leaflet);
+  library(GGally);
+  library(devtools);
+  library(sp);
+  library(cowplot);
+  library(tmap);
+  library(RColorBrewer);
+  library(patchwork);
+  ## for bivariate maps
+  library(classInt);
+  library(rgdal);
+  library(dismo);
+  library(XML);
+  library(maps);
+  library(sp);
+  })
+```
+
++ custom function for stacking the data
+```{r}
+# data = data from sample locations includes prevalence data as CASES and N, and includes the values for environmental variables in the sample locations
+# dp = data for the locations to be predicted. It includes all the environmental data for the locations where the prevalence data is to be predicted. The CASES and N column for dp is blank as these data are the ones to be predicted
+# cov_list = vector of selected covariates for the model fitting and prediction
+stack_data <- function(data, dp, cov_list){
+  # stack for estimation stk.e
+  df <- data.frame(Intercept = 1, subset(data, select = cov_list))
+  stk.e <- inla.stack(
+    tag = "est",
+    data = list(y = data$CASES, numtrials = data$N),
+    A = list(1, Ae),
+    effects = list(df, spatial.field = iset)
+  )
+  
+  # stack for prediction stk.p
+  df_p <- data.frame(Intercept = 1, subset(dp, select = cov_list))
+  stk.p <- inla.stack(
+    tag = "pred",
+    data = list(y = NA, numtrials = NA),
+    A = list(1, Ap),
+    effects = list(df_p, spatial.field = iset))
+  
+  # stk.full has stk.e and stk.p
+  stk.full <- inla.stack(stk.e, stk.p)
+  
+  return(stk.full)
+}
+```
+
+## Loading the data
+
+```{r}
+load("data/selected_covs_files_1km.RData")
+data <- eth_prev2
+
+m <- getData(name = "GADM", country = "ETH", level = 0)
+m_0 <- m %>% st_as_sf()
+# pred_data <- selected_covariates
+# ra <- pred_data
+
+covariates <- selected_covariates
+varlist <- c("slope", "isothermality", "precp_seasonality",
+             "NDVI_2003_11", "dist_river_DIVA", "Population_density",
+             "Flow_accumulation", "Soil_moisture") 
+pred_data <- covariates[[varlist]]
+pred_data <- aggregate(covariates[[varlist]], fact = 5, fun = mean, na.rm = TRUE) ## aggregating the prediction grid to 5 x 5 km grid
+
+ra <- pred_data
+dp <- data.frame(rasterToPoints(ra))
+```
+
+## Model fitting
+### Mesh construction
+```{r}
+coords <-  cbind(data$LONG, data$LAT)
+bdry <- inla.sp2segment(m)
+bdry$loc <- inla.mesh.map(bdry$loc)
+mesh1 <- inla.mesh.2d(
+  loc = coords, boundary = bdry, max.edge = c(0.5, 5),
+  cutoff = 0.03 # best mesh
+)
+mesh1$n
+
+spde <- inla.spde2.matern(mesh1, alpha=2)
+iset <- inla.spde.make.index(name = "spatial.field", spde$n.spde)
+length(iset)
+```
+
+### Make projection matrix
+```{r}
+Ae <- inla.spde.make.A(mesh=mesh1,loc=as.matrix(coords));dim(Ae)
+coop <- cbind(dp$x, dp$y)
+Ap <- inla.spde.make.A(mesh = mesh1, loc = coop);dim(Ap)
+```
+
+### Model formula
+```{r}
+predterms <- as.formula(paste("y ~ 0 + Intercept +", paste(varlist, collapse =  "+"), "+ f(spatial.field, model = spde)"))
+datastack <- stack_data(data = data, dp = dp, cov_list = varlist)
+```
+
+### Model fitting
+```{r, eval = FALSE}
+tic()
+res <- inla(predterms,
+            family = "zeroinflated.binomial.1", Ntrials = numtrials,
+            data = inla.stack.data(datastack, spde = spde),
+            control.family = list(link = "logit"),
+            control.compute = list(dic = TRUE, waic = TRUE,
+                                   cpo = TRUE, config = TRUE,
+                                   openmp.strategy="huge"),
+            control.predictor = list(
+              compute = TRUE, link = 1,
+              A = inla.stack.A(datastack)
+            )
+)
+toc()
+```
+
+### Model results
+```{r}
+res <- readRDS("data/inla_point_res_5km_mesh5.rds")
+summary(res)
+reg_coff <- res$summary.fixed %>% arrange(desc(mean))
+
+### Fixed effects from the model
+reg_coff %>% round(digits = 5)
+
+### Hyper parameters from the model
+res$summary.hyperpar %>% data.frame() %>% round(digits = 5)
+```
+
+## Model prediction
+### Mapping prediction
+```{r}
+index <- inla.stack.index(stack = datastack, tag = "pred")$data
+
+prev_mean <- res$summary.fitted.values[index, "mean"]
+prev_ll <- res$summary.fitted.values[index, "0.025quant"]
+prev_ul <- res$summary.fitted.values[index, "0.975quant"]
+prev_sd <-  res$summary.fitted.values[index, "sd"]
+
+summary(res$summary.fitted.values[index,])
+
+### Custom function to rasterize the predicted prevalence
+raster_prev <- function(prev_mean){
+  r_prev_mean <- rasterize(
+    x = coop, y = ra, field = prev_mean,
+    fun = mean)
+}
+
+r_prev_mean <- raster_prev(prev_mean = prev_mean)
+r_prev_ul <- raster_prev(prev_ul)
+r_prev_ll <- raster_prev(prev_ll)
+r_prev_sd <- raster_prev(prev_sd)
+```
+
+### Prevalence map
+```{r}
+pal <- hcl.colors(100, palette = "Reds", rev =TRUE)
+my.palette.heat <- rev(brewer.pal(n = 9, name = "RdYlBu"))
+
+
+p_mean <- tm_shape(r_prev_mean*100) + 
+    tm_raster(title="Mean Prevalence (%)", alpha = 1, palette = pal, legend.is.portrait = T, style = "cont", midpoint = 50) +
+    tm_shape(m_0)+
+    tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
+    tm_compass(type = "arrow", position = c("left", "top")) +
+    tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c("right", "bottom")) +
+    tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Verdana")
+p_mean
+
+
+p_UL <- tm_shape(r_prev_ul*100) + 
+  tm_raster(title="Prevalence (%): Upper limit", alpha = 1, palette = pal, legend.is.portrait = T, style = "cont", midpoint = 50) +
+  tm_shape(m_0)+
+  tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
+  # tm_compass(type = "8star", position = c("left", "top")) +
+  tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c("right", "bottom")) +
+  tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Verdana")
+
+
+p_LL <- tm_shape(r_prev_ll*100) + 
+  tm_raster(title="Prevalence (%): Lower limit", alpha = 1, palette = pal, legend.is.portrait = T, style = "cont", midpoint = 50) +
+  tm_shape(m_0)+
+  tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
+  # tm_compass(type = "8star", position = c("left", "top")) +
+  # tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c("right", "bottom")) +
+  tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Verdana")
+
+tmap_arrange(p_LL, p_UL, ncol = 1)
+```
+
+### Uncertainty map
+```{r}
+data_sf <- st_as_sf(x = data, coords = c('LONG','LAT'), crs= "+proj=longlat +datum=WGS84")
+
+pal <- hcl.colors(100, palette = "Blues", rev =TRUE)
+p <- tm_shape(r_prev_sd*100) + 
+  tm_raster(title="Prevalence(SD)", alpha = .8, palette = pal, legend.is.portrait = T, style = "cont") +
+  tm_shape(m_0)+
+  tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
+  tm_shape(data_sf) + 
+  tm_symbols(col = "black", shape = 3, alpha = .5, size = .07, legend.shape.show = T) +
+  tm_compass(type = "arrow", position = c("left", "top")) +
+  tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c("right", "bottom")) +
+  tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Verdana")
+p
+```
+
+### Bivariate map
++ Thanks to this [blog](https://rfunctions.blogspot.com/2015/03/bivariate-maps-bivariatemap-function.html)
+#### Bivariate map functions
+```{r}
+colmat<-function(nquantiles=10, upperleft=rgb(0,150,235, maxColorValue=255), upperright=rgb(130,0,80, maxColorValue=255), bottomleft="grey", bottomright=rgb(255,230,15, maxColorValue=255), xlab="x label", ylab="y label"){
+  my.data<-seq(0,1,.01)
+  my.class<-classIntervals(my.data,n=nquantiles,style="quantile")
+  my.pal.1<-findColours(my.class,c(upperleft,bottomleft))
+  my.pal.2<-findColours(my.class,c(upperright, bottomright))
+  col.matrix<-matrix(nrow = 101, ncol = 101, NA)
+  for(i in 1:101){
+    my.col<-c(paste(my.pal.1[i]),paste(my.pal.2[i]))
+    col.matrix[102-i,]<-findColours(my.class,my.col)}
+  plot(c(1,1),pch=19,col=my.pal.1, cex=0.5,xlim=c(0,1),ylim=c(0,1),frame.plot=F, xlab=xlab, ylab=ylab,cex.lab=1.3)
+  for(i in 1:101){
+    col.temp<-col.matrix[i-1,]
+    points(my.data,rep((i-1)/100,101),pch=15,col=col.temp, cex=1)}
+  seqs<-seq(0,100,(100/nquantiles))
+  seqs[1]<-1
+  col.matrix<-col.matrix[c(seqs), c(seqs)]}
+```
+
+```{r}
+bivariate.map<-function(rasterx, rastery, colormatrix=col.matrix, nquantiles=10){
+  quanmean<-getValues(rasterx)
+  temp<-data.frame(quanmean, quantile=rep(NA, length(quanmean)))
+  brks<-with(temp, quantile(temp,na.rm=TRUE, probs = c(seq(0,1,1/nquantiles))))
+  r1<-within(temp, quantile <- cut(quanmean, breaks = brks, labels = 2:length(brks),include.lowest = TRUE))
+  quantr<-data.frame(r1[,2]) 
+  quanvar<-getValues(rastery)
+  temp<-data.frame(quanvar, quantile=rep(NA, length(quanvar)))
+  brks<-with(temp, quantile(temp,na.rm=TRUE, probs = c(seq(0,1,1/nquantiles))))
+  r2<-within(temp, quantile <- cut(quanvar, breaks = brks, labels = 2:length(brks),include.lowest = TRUE))
+  quantr2<-data.frame(r2[,2])
+  as.numeric.factor<-function(x) {as.numeric(levels(x))[x]}
+  col.matrix2<-colormatrix
+  cn<-unique(colormatrix)
+  for(i in 1:length(col.matrix2)){
+    ifelse(is.na(col.matrix2[i]),col.matrix2[i]<-1,col.matrix2[i]<-which(col.matrix2[i]==cn)[1])}
+  cols<-numeric(length(quantr[,1]))
+  for(i in 1:length(quantr[,1])){
+    a<-as.numeric.factor(quantr[i,1])
+    b<-as.numeric.factor(quantr2[i,1])
+    cols[i]<-as.numeric(col.matrix2[b,a])}
+  r<-rasterx
+  r[1:length(r)]<-cols
+  return(r)}
+```
+
+#### Plot bivariate map
+
+```{r}
+# Color matrix
+col.matrix <-colmat(nquantiles=4, upperleft="lightgreen", upperright="#F0842B5E", 
+                   bottomleft="#6EA2F0", bottomright="#B31212D4", xlab="Prevalence", ylab="Uncertainty" )
+```
+
+```{r}
+# Bivariate map
+bivmap<-bivariate.map(r_prev_mean,r_prev_sd, colormatrix=col.matrix, nquantiles=4)
+plot(bivmap,frame.plot=F,axes=F,box=F,add=F,legend=F,col=as.vector(col.matrix))
+plot(st_geometry(m_0), add= T, lwd = 4)
+```
+
+
+### Aggregated map on district level
+```{r}
+eth_st2 <- getData(name = "GADM", country = "ETH", level = 3)
+eth_sf2 <- eth_st2 %>% st_as_sf()
+
+mean_prev <- exactextractr::exact_extract(r_prev_mean *100, eth_sf2, fun = "mean") # faster
+eth_sf2$INLA_prev_mean <- mean_prev
+
+sd_prev <- exactextractr::exact_extract(r_prev_sd*100, eth_sf2, fun = "mean") # faster
+eth_sf2$INLA_prev_sd <- sd_prev
+
+min_prev <- exactextractr::exact_extract(r_prev_mean *100, eth_sf2, fun = "min") # faster
+eth_sf2$INLA_prev_min <- min_prev
+
+max_prev <- exactextractr::exact_extract(r_prev_mean *100, eth_sf2, fun = "max")
+eth_sf2$INLA_prev_max <- max_prev
+
+eth_sf2$range <- eth_sf2$INLA_prev_max - eth_sf2$INLA_prev_min
+```
+
+```{r}
+mypalette <- colorRampPalette((brewer.pal(9, "Reds")))
+prev <- ggplot()+
+  geom_sf(data = eth_sf2, aes(fill = INLA_prev_mean), col = "black", lwd = .3) +
+  scale_fill_gradientn(colours = mypalette(100)) +
+  labs(fill = "Mean prevalence (%)") +
+  theme_void(base_family = "Verdana") +
+  theme(legend.position = "bottom", legend.key.size = unit(2, 'cm'), #change legend key size
+        legend.key.height = unit(.5, 'cm'), #change legend key height
+        legend.key.width = unit(1.5, 'cm')) +
+  guides(fill = guide_colourbar(title.position="top", title.hjust = 0.5))
+```
++ Range
+```{r}
+range <- ggplot()+
+  geom_sf(data = eth_sf2, aes(fill = range), col = "black", lwd = .3) +
+  scale_fill_gradientn(colours = mypalette(100)) +
+  labs(fill = "Range of Mean prevalence (%)") +
+  theme_void(base_family = "Verdana") +
+  theme(legend.position = "bottom", legend.key.size = unit(2, 'cm'), #change legend key size
+        legend.key.height = unit(.5, 'cm'), #change legend key height
+        legend.key.width = unit(1.5, 'cm')) +
+  guides(fill = guide_colourbar(title.position="top", title.hjust = 0.5))
+```
+
+```{r, warning=FALSE, message=FALSE}
+plot_grid(prev, range, labels = "AUTO")
+```
+
+### Relationship profile between environmental variables and the predicted prevalence
+```{r}
+data_p <- dp[, varlist]
+data_p$pred_prev <- prev_mean * 100
+# data_p$pred_prev_UL <- prev_ul
+# data_p$pred_prev_LL <- prev_ll
+# data_p$pred_prev_med <- prev_med
+
+data_p_long <- data_p %>% pivot_longer(cols = names(data_p)[1:8],
+                                       names_to = "covariates",
+                                       values_to = "values") %>% 
+  mutate(covariates = as_factor(covariates))    
+
+levels(data_p_long$covariates) <- c("Slope", "Isothermality", "Precipitation seasonality",
+                                    "Vegetation index", "Distance to the nearest river (km)", "Population density", "Flow accumulation", "Soil moisture (mm)")
+```
+```{r, warning=FALSE, message=FALSE}
+p <- ggplot(data_p_long, aes(values, pred_prev)) +
+  geom_smooth(method = "gam") + facet_wrap(~covariates, scales = "free", nrow = 2) + # default method is gam
+  theme_bw(base_family = "Verdana", base_size = 12) +
+  xlab("Values") + ylab("Onchocerciasis prevalence")
+p
+```
+
+### Plotting the spatial field
++ Thank to this [blog](https://ourcodingclub.github.io/tutorials/inla/)
+
+```{r}
+points.em <- mesh1$loc
+
+stepsize <- 0.008 # This is given in coordinates unit (in this case this corresponds to 1km)
+east.range <- diff(range(points.em[,1]))  # calculate the length of the longitude
+north.range <- diff(range(points.em[,2])) # calculate the length of the latitude
+
+nxy <- round(c(east.range, north.range)/stepsize)  # Calculate the number of cells in the x and y ranges
+
+# Project the spatial field on the mesh vertices using the inla.mesh.projector() function
+projgrid <- inla.mesh.projector(mesh1,
+                                xlim = range(points.em[,1]),
+                                ylim = range(points.em[,2]),
+                                dims = nxy)
+xmean <- inla.mesh.project(projgrid,
+                           res$summary.random$spatial.field$mean)
+xsd <- inla.mesh.project(projgrid,
+                         res$summary.random$spatial.field$sd)
+
+xmean2 <- t(xmean)
+xmean3 <- xmean2[rev(1:length(xmean2[,1])),]
+xmean_ras <- raster(xmean3,
+                    xmn = range(projgrid$x)[1], xmx = range(projgrid$x)[2],
+                    ymn = range(projgrid$y)[1], ymx = range(projgrid$y)[2],
+                    crs = CRS("+proj=longlat +datum=WGS84 +no_defs"))
+
+xsd2 <- t(xsd)
+xsd3 <- xsd2[rev(1:length(xsd2[,1])),]
+xsd_ras <- raster(xsd3,
+                  xmn = range(projgrid$x)[1], xmx =range(projgrid$x)[2],
+                  ymn = range(projgrid$y)[1], ymx =range(projgrid$y)[2],
+                  crs = CRS("+proj=longlat +datum=WGS84 +no_defs"))
+xmean_ras2 <- mask(xmean_ras, m)
+xsd_ras2 <- mask(xsd_ras, m)
+```
+
+```{r, warning=FALSE, message=FALSE}
+my.palette.var <- brewer.pal(n = 9, name = "BuPu")
+my.palette.heat <- rev(brewer.pal(n = 9, name = "RdYlBu"))
+
+p_mean <- tm_shape(xmean_ras2) + 
+  tm_raster(title="Spatial field (Mean)", alpha = 1, palette = my.palette.heat, legend.is.portrait = T, style = "cont", midpoint = NA)+
+  tm_shape(m)+
+  tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
+  tm_compass(type = "arrow", position = c(.1, .75)) +
+  # tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c(.6, .1)) +
+  tm_layout(legend.outside = FALSE, legend.position = c(.61, .65), frame = FALSE, fontfamily = "Verdana")
+
+
+p_var <- tm_shape(xsd_ras2) + 
+  tm_raster(title="Spatial field (SD)", alpha = 1, palette = my.palette.var, legend.is.portrait = T, style = "cont", midpoint = NA)+
+  tm_shape(m)+
+  tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
+  # tm_compass(type = "arrow", position = c(.1, .75)) +
+  tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c(.6, .12)) +
+  tm_layout(legend.outside = FALSE, legend.position = c(.61, .65), frame = FALSE, fontfamily = "Verdana")
+
+spatial_field <- tmap_arrange(p_mean, p_var, ncol = 2, widths = c(1,1), heights = 1)
+
+spatial_field
+```
+
+### Plotting observed and the predicted values from the model
+```{r}
+data$PREV <- data$CASES/data$N  *100
+pred_stack <- stack(r_prev_mean, r_prev_ll, r_prev_ul)
+names(pred_stack) <- c("predicted_mean_prev", "pred_LL_prev", "pred_UL_prev")
+pred_eth <- raster::extract(pred_stack, eth_prev2[c("LONG","LAT")], na.rm = TRUE, df = TRUE)
+
+
+data2 <- as.data.frame(cbind(data, pred_eth)) 
+data2$predicted_mean_prev <- data2$predicted_mean_prev *100
+cor(data$PREV, pred_eth$predicted_mean_prev, method = "spearman")
+
+data2 <- data2 %>% dplyr::select(PREV, predicted_mean_prev, pred_LL_prev,
+                                                         pred_UL_prev) %>% mutate(abs_difference = (abs(PREV-predicted_mean_prev)))
+```
+
+```{r}
+mypalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+
+p <-ggplot(data2) +
+  geom_point(mapping = aes(PREV , predicted_mean_prev, col = abs_difference)) +
+  geom_abline(slope=1, intercept=0, linetype = "dashed") +
+  ggpubr::stat_cor(mapping = aes(PREV, predicted_mean_prev), data = data2, method = "spearman", label.x = 50, label.y = 5) +
+  scale_color_gradientn(colours = mypalette(100)) + 
+  theme_bw(base_family = "Verdana", base_size = 12) +
+  xlab("Observed prevalence(%)") +
+  ylab("Predicted prevalence (%)") + labs(color = "Absolute error") +
+  theme(legend.position = "bottom", legend.key.size = unit(1, 'cm'),                                                                       #change legend key size
+        legend.key.height = unit(.5, 'cm'), #change legend key height
+        legend.key.width = unit(1, 'cm')) #+ facet_wrap(~variables)
+p
+```
+
