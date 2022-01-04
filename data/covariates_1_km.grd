@@ -1,0 +1,25 @@
+[general]
+creator=R package 'raster'
+created=2021-12-28 17:13:15
+[georeference]
+nrows=1416
+ncols=1824
+xmin=32.9
+ymin=3.2
+xmax=48.1
+ymax=15
+projection=+proj=longlat +datum=WGS84 +no_defs
+[data]
+datatype=FLT4S
+byteorder=little
+nbands=30
+bandorder=BIL
+minvalue=3.9:8.7:45:0.42:12.1:-5.7:11.9:4.1:2.7:5.5:2.3:94:20:-2.1316282072803e-13:34:43:-6.3948846218409e-13:4:-2.04636307898909e-11:-189:0:3.4809452144187e-07:-923.752624511719:2.21463781949641e-17:-0.650702655315399:-2.94509887695312:0.635000050067902:0:0:0.857558660209179
+maxvalue=31.2:18.8:87:3.822:41.4:22.6:28.3:34.1:33.1:34.6:28.8:2228:458:60:152:1212:218:655:1212:4420:69.9998168945312:100.000002905216:6147.14697265625:100:245.516052246094:256.447296875:25.3999996185303:29760.248046875:6192.25:54.1121304035187
+nodatavalue=-3.4e+38
+[legend]
+legendtype=
+values=
+color=
+[description]
+layername=annual_mean_temp:annual_diurnal_range:isothermality:temp_seasonality:maxtemp_warmest_mnth:mintemp_coldest_mnth:temp_annual_range:meantemp_wettestquart:mean_temp_driestquart:meantemp_warmestquarter:meantemp_coldestquart:annual_precp:prec_wettest_mnth:precp_driest_mnth:precp_seasonality:precp_wettest_quart:precp_dreist_quart:precp_warmest_quart:precp_coldest_quarter:alt:slope:NDVI_2003_11:EVI_2003_11:Flow_accumulation:drain_direction:dist_river_DIVA:Soil_moisture:Population_density:night_lights:mean_housing_2000_15
