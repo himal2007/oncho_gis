@@ -1,5 +1,5 @@
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-# oncho_gis
+[![](https://flat.badgen.net/badge/license/MIT/cyan?scale=1.5)](https://opensource.org/licenses/MIT)
+# Geospatial modeling of pre-intervention prevalence of _Onchocerca volvulus_ infection in Ethiopia as an aid to onchocerciasis elimination.
 Files related to geospatial modelling of _O. volvulus_ infection prevalence in Ethiopia.
 
 The repository consists of the markdown files/codes for the following aspects of the analysis:
