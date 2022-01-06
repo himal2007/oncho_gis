@@ -1,3 +1,4 @@
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 # oncho_gis
 Files related to geospatial modelling of _O. volvulus_ infection prevalence in Ethiopia.
 
