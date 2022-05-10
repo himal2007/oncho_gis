@@ -1,7 +1,7 @@
 ---
 title: "Model Selection and Fitting"
 author: "Himal Shrestha"
-date: "22/12/2021"
+date: "03/04/2022"
 output: 
   md_document:
     variant: markdown_github
@@ -10,7 +10,7 @@ output:
 ---
 
 ```{r setup, echo=FALSE}
-knitr::opts_knit$set(root.dir = "C:/Users/User/OneDrive - LA TROBE UNIVERSITY/oncho_git/oncho_gis")
+knitr::opts_knit$set(root.dir = "C:/Users/User/OneDrive - LA TROBE UNIVERSITY/oncho_gis")
 ```
 
 ## Introduction
@@ -26,7 +26,7 @@ This script can be used for following purpose:
 
 ## Load libraries
 ```{r, message=FALSE, error=FALSE, tidy=TRUE, warning=FALSE}
-extrafont::loadfonts(device="win")
+extrafont::loadfonts(device="win", quiet = TRUE)
 ```
 
 ```{r, message=FALSE, error=FALSE, tidy=TRUE, warning=FALSE}
@@ -80,12 +80,11 @@ stack_data <- function(data, dp, cov_list){
 
 ```{r}
 load("data/selected_covs_files_1km.RData")
+load("data/220511_output_model_selection.RData")
+
 data <- eth_prev2
 
 m <- getData(name = "GADM", country = "ETH", level = 0)
-# m <- m %>% st_as_sf()
-# pred_data <- selected_covariates
-# ra <- pred_data
 ```
 
 + Test mesh for model selection
@@ -109,10 +108,6 @@ mesh1_plot
 ```{r}
 A <- inla.spde.make.A(mesh = mesh1, loc = as.matrix(coords)); dim(A)
 spde <- inla.spde2.matern(mesh1, alpha=2)
-# spde <- inla.spde2.pcmatern(mesh = mesh1, alpha = 2, constr = TRUE,
-#                             prior.range = c(15, 0.01), #P(range < 15000) = 0.01
-#                             prior.sigma = c(3, 0.01))  # P(sigma > 3) = 0.01
-
 iset <- inla.spde.make.index(name = "spatial.field", spde$n.spde)
 length(iset)
 ```
@@ -132,7 +127,6 @@ stk <- inla.stack(
 ```{r}
 formula01 <-y ~ -1 + Intercept  # without spatial effect
 formula0 <-y ~ -1 + Intercept + f(spatial.field, model=spde)  # with spatial effect
-# + Soil_moisture + Flow_accumulation + near_river_DIVA + night_lights + mean_housing_2000_15 + Population_density + annual_diurnal_range + annual_precp + f(spatial.field, model=spde) 
 ```
 
 #### Binomial
@@ -232,7 +226,7 @@ p <- ggplot(model_stats_long, aes(x=Models, y=values, group=validation_stats)) +
   scale_linetype_manual(values=c("solid", "solid")) +
   scale_color_manual(values = c("#E69F00", "skyblue")) +
   scale_fill_manual(values = c("#E69F00", "skyblue")) +
-theme_bw(base_family = "Verdana", base_size = 12) +
+theme_bw(base_family = "Arial", base_size = 12) +
   labs(y = "Validation statistics", color = "", linetype = "", fill = "") + theme(axis.text.x = element_text(angle = 60, hjust = 1)) #+ facet_wrap(~validation_stats, scales = "free") +
 p
 ```
@@ -338,9 +332,12 @@ for (i in 1:length(meshes)) {
   cat("\nIteration = ", i, "\n")
   print(Sys.time() - old)
 }
-
+```
+```{r}
 df_1
 ```
+
++ Mesh 5 selected
 ## Selection of environmental variables
 ```{r}
 mesh <- mesh5
@@ -398,7 +395,7 @@ model_selection
 ```
 
 ### Other models
-```{r, warning=FALSE}
+```{r, warning=FALSE, eval = FALSE}
 # variables from each group that yielded the least DIC
 covs_1 <- c("slope", "isothermality", "precp_seasonality", "NDVI_2003_11", "Population_density", "dist_river_DIVA")
 # testing other combinations
@@ -434,8 +431,9 @@ for(i in 1:length(covs_comb)){
   cat("\nIteration = ", i, "\n")
   print(Sys.time() - old)
 }
+```
 
-model_selection <- data.frame(model_selection)
+```{r}
 model_selection
 ```
 
@@ -458,12 +456,11 @@ data$PREV <- data$CASES/data$N
 ```
 
 ### Model validation
-+ Output RMSE and correlation ceofficient
++ Output RMSE and correlation coefficient
 + Output validation data with observed and predicted values
 ```{r, eval = FALSE}
 library(dismo)
 fold <- 10 # specify fold
-# model <- 2 # specify model
 variables = 2
 pb = txtProgressBar(min = 0, max = fold, initial = 0) 
 output <- matrix(ncol=variables+2)
@@ -505,7 +502,7 @@ for (j in 1:length(formula)) {
     validation$rmse = sqrt(mean(validation$res^2, na.rm=TRUE)) 
     validation$cor = cor(obs_prev, tmp.mean, 
                          use="pairwise.complete.obs",
-                         method="spearman")
+                         method="pearson")
     output <- bind_rows(output, (data.frame(Model = j, Fold = i, RMSE = validation$rmse, Correlation.coefficient = validation$cor))) 
     
     if(i == 1){
@@ -534,9 +531,8 @@ for (j in 1:length(formula)) {
 2. `object_cor_combined` - dataframe with observed and predicted prevalence values in each folds of cross-validation for different models
 
 ```{r}
-load("data/211231_output_cross_val.RData")
-
 output %>% head()
+output <- output %>% na.omit()
 
 object_cor_combined %>% head()
 
@@ -546,27 +542,27 @@ output <- output %>% mutate(model_names = as_factor(model_names))
 ```
 
 #### Plot RMSE and correlation coefficient
-```{r}
+```{r, warning=FALSE}
 library(forcats)
 
 cor_coff <- output %>% mutate(model_names = fct_reorder(model_names, Correlation.coefficient)) %>% 
   ggplot( aes(x=model_names, y=Correlation.coefficient, fill = model_names, alpha = 0.7)) +
     geom_boxplot(outlier.shape = NA, width = 0.6) +
     geom_point(shape = 21, fill = "white", color = "black", size = 2, alpha = 0.5) + #geom_jitter(color="black", size=2, alpha=0.9) +
-    theme_bw(base_family = "Verdana") +
+    theme_bw(base_family = "Arial") +
     theme(
       legend.position="none",
       plot.title = element_text(size=11)
     ) +
     xlab("Models") + ylab("Correlation coefficient") + ylim(c(0.3,.8))
 
-output$RMSE <- output$RMSE * 100  # multiplied as prevalence is expressed as percentage in the model output
+output$RMSE <- output$RMSE*100  # multiplied as prevalence is expressed as percentage in the model output
 
 RMSE <- output %>% mutate(model_names = fct_reorder(model_names, RMSE, .desc = T)) %>% 
   ggplot( aes(x=model_names, y=RMSE, fill = model_names, alpha = 0.7)) +
     geom_boxplot(outlier.shape = NA, width = 0.6) +
     geom_point(shape = 21, fill = "white", color = "black", size = 2, alpha = 0.5) + #geom_jitter(color="black", size=2, alpha=0.9) +
-    theme_bw(base_family = "Verdana") +
+    theme_bw(base_family = "Arial") +
     theme(
       legend.position="none",
       plot.title = element_text(size=11)
@@ -584,4 +580,46 @@ CV_plot
 y ~ 0 + Intercept + slope + isothermality + precp seasonality + 
     NDVI_2003_11 + dist_river_DIVA + Flow_accumulation + Soil_moisture + 
     Population_density + f(spatial.field, model = spde)
+```
+### Testing model distribution with full set of covariates
+```{r}
+models <- c("zeroinflated.binomial.1", "zeroinflated.binomial.0", "binomial")
+## SPDE mesh
+
+## Formula
+varlist <- c("slope", "isothermality", "precp_seasonality",
+             "NDVI_2003_11", "dist_river_DIVA", "Population_density",
+             "Flow_accumulation", "Soil_moisture") 
+
+predterms <- formula2
+```
+
+```{r, eval = FALSE}
+pb = txtProgressBar(min = 0, max = length(models), initial = 0) 
+
+DICWAIC_table <- data.frame(model_names = NA, DIC = NA, WAIC = NA)
+
+old <- Sys.time()
+for(i in 1:length(models)){
+  set.seed(12345)
+  inla.setOption(num.threads = 12)
+  model1<-inla(predterms,
+            family = models[i], Ntrials = numtrials,
+            data = inla.stack.data(stk, spde = spde),
+            control.family = list(link = "logit"),
+            control.compute = list(dic = TRUE, waic = TRUE,
+                                   cpo = TRUE, config = TRUE,
+                                   openmp.strategy="huge"),
+            control.predictor = list(
+              compute = TRUE, link = 1,
+              A = inla.stack.A(stk)))
+  DICWAIC_table[i, ] <- c(models[i], model1$dic$dic, model1$waic$waic)
+   setTxtProgressBar(pb,i)
+  cat("\nIteration = ", i, "\n")
+  print(Sys.time() - old)
+}
+```
+
+```{r}
+DICWAIC_table
 ```
