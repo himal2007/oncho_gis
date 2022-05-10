@@ -1,7 +1,7 @@
 ---
 title: "Exploring prevalence data and the environmental data"
 author: "Himal Shrestha"
-date: "22/12/2021"
+date: "03/04/2022"
 output: 
   md_document:
     variant: markdown_github
@@ -10,23 +10,25 @@ output:
 ---
 
 ```{r setup, echo=FALSE}
-knitr::opts_knit$set(root.dir = "C:/Users/User/OneDrive - LA TROBE UNIVERSITY/oncho_git/oncho_gis")
+knitr::opts_knit$set(root.dir = "C:/Users/User/OneDrive - LA TROBE UNIVERSITY/oncho_gis")
 ```
 
 ## Introduction
 This script can be used for following purpose:
 
-1. Visualising raw prevalence data along with the map of Ethiopia
+1. Filtering raw prevalence data from the [ESPEN database](https://espen.afro.who.int/tools-resources/download-data).
 
-2. Visualise environmental data
+2. Visualising raw onchocerciasis nodule prevalence data along with the map of Ethiopia.
 
-3. Extract environmental data for each data points
+3. Visualise environmental data
 
-4. Explore environmental data for correlation - Round I selection of environmental variables
+4. Extracting environmental data for each data points
+
+5. Exploring environmental data for correlation - Round I selection of environmental variables
 
 ## Load libraries
 ```{r, message=FALSE, error=FALSE, tidy=TRUE, warning=FALSE}
-extrafont::loadfonts(device="win")
+extrafont::loadfonts(device="win", quiet = T)
 ```
 
 ```{r, message=FALSE, error=FALSE, tidy=TRUE, warning=FALSE}
@@ -46,14 +48,114 @@ suppressMessages({library(sf);
   library(car);
   library(GGally);
   library(data.table);
+  library(ggpubr);
+  library(ggspatial);
   })
 ```
 
 ## Loading the data
+
+```{r}
+# data from ESPEN
+eth_prev_site <- read.csv("data/data-ET-oncho-sitelevel.csv")
+
+eth_prev_site_2 <- eth_prev_site %>% dplyr::select(ADMIN1_NAME, ADMIN2_NAME,
+                                                   IU_NAME, IU_ID, LocationName,
+                                                   Longitude, Latitude, 
+                                                   Georeliability, SurveyYear,
+                                                   Period, Year_MDA1, Method_0,
+                                                   Method_2,
+                                                   Examined, Positive, 
+                                                   Prevalence, CMFL) %>% rename(LONG = Longitude,
+                                              LAT = Latitude,
+                                              N = Examined,
+                                              CASES = Positive)
+
+eth_prev_mf <- eth_prev_site_2 %>% filter(Method_2 == "Parasitology (Skin biopsy)")
+
+eth_prev_nodule <- eth_prev_site_2 %>% filter(Method_2 == "Nodule palpation")
+```
++ Finding values from the same locations
+```{r}
+find_duplicate <- function(df){
+  i <- duplicated(df[, c("LONG", "LAT")])
+  long_dup <- df[i, ]$LONG
+  lat_dup <- df[i, ]$LAT
+  duplicate_sites <- df %>% filter(LONG %in% long_dup & LAT %in% lat_dup)
+  return(duplicate_sites)
+}
+  
+duplicate_mf <- find_duplicate(df = eth_prev_mf)
+duplicate_nodule <- find_duplicate(df = eth_prev_nodule)
+```
+
++ Aggregating the observations from same locations
+
+```{r}
+eth_prev_nodule_2 <- group_by(eth_prev_nodule, LONG, LAT, Method_2) %>%  summarize(
+    total = sum(N),
+    positive = sum(CASES),
+    PREV = positive/total
+  )
+eth_prev_nodule_2 <- eth_prev_nodule_2 %>% rename(N = total,
+                                                  CASES = positive)
+eth_prev_nodule_2 %>% find_duplicate()
+```
+```{r}
+eth_prev_mf_2 <- group_by(eth_prev_mf, LONG, LAT, Method_2) %>%
+  summarize(
+    total = sum(N),
+    positive = sum(CASES),
+    PREV = positive/total
+  )
+eth_prev_mf_2 <- eth_prev_mf_2 %>% rename(N = total,
+                                              CASES = positive)
+```
+
++ Combining nodule data with unique coordinates: `eth_prev_nodule_2`, and skin mf data `eth_prev_mf_2` with unique coordinates
+
+```{r}
+col_required <- names(eth_prev_mf_2)
+eth_prev_nodule_2 <- eth_prev_nodule_2[, dput(as.character(names(eth_prev_mf_2)))]
+eth_prevalence <- bind_rows(eth_prev_mf_2, eth_prev_nodule_2)
+eth_prevalence <- eth_prevalence %>% dplyr::select(LONG, LAT, PREV, Method_2)
+
+eth_prev_same_site <- find_duplicate(df = eth_prevalence)
+eth_prev_ss_wide <- eth_prev_same_site %>% pivot_wider(names_from = Method_2,
+                                                       values_from = PREV)
+```
++ _Correlation analysis__: REMO and skin mf data from the same geographic coordinates were selected for the correlation analysis.
+
+```{r}
+cor.test(eth_prev_ss_wide$`Parasitology (Skin biopsy)`, eth_prev_ss_wide$`Nodule palpation`, method = "pearson")
+
+eth_prev_ss_wide$`Parasitology (Skin biopsy)` <- eth_prev_ss_wide$`Parasitology (Skin biopsy)` * 100
+eth_prev_ss_wide$`Nodule palpation` <- eth_prev_ss_wide$`Nodule palpation` * 100
+
+cor_plot <- ggscatter(eth_prev_ss_wide, y = "Parasitology (Skin biopsy)", 
+          x = "Nodule palpation", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          ylab = "Microfilarial prevalence (%)", xlab = "Nodule prevalence (%)",
+          ggtheme = theme_classic(base_family = "Arial"))
+cor_plot
+```
+
++ There are two observations which has very high REMO prevalence (>90%) but near to zero mf prevalence. This could be the result of fluctuation in vector dynamics, or human error. These two data were deemed as outliers and not included for the analysis.
++ Removing outliers
+```{r}
+eth_prev_ss_wide <- eth_prev_ss_wide %>% rename(REMO = "Nodule palpation") 
+filter(eth_prev_ss_wide, REMO > 90) -> outlier_obs
+outlier_site <- eth_prev_site[eth_prev_site$Longitude %in% outlier_obs$LONG, ]
+remove_outlier <- setdiff(eth_prev_ss_wide, outlier_obs)
+eth_prev_nodule_3 <- eth_prev_nodule_2[!eth_prev_nodule_2$LONG %in% outlier_obs$LONG, ] %>% mutate(Method_2 = NULL)
+```
++ `eth_prev_nodule_3` is the dataset used for the prevalence mapping.
+
 ```{r}
 # prevalence data
-data <- read.csv("data/eth_espen_nodule_prev.csv")
-data$prevalence <- data$CASES/data$N *100
+data <- eth_prev_nodule_3
+data$prevalence <- data$PREV *100
 
 # Ethiopia border level 0 - country level
 m_0 <- getData(name = "GADM", country = "ETH", level = 0)
@@ -69,22 +171,34 @@ m_1_sf <- m_1 %>% st_as_sf()
 mypalette <- colorRampPalette(rev(brewer.pal(11, "RdYlBu")))
 
 # raw prevlaence data on a map
-prev <- ggplot(m_1_sf) +
-  geom_sf()+ coord_sf(datum = sf::st_crs(4326))+
-  geom_point(data = data, aes(LONG, LAT, fill = prevalence), color = "black", size = 1.25, stroke = .5, shape = 21, alpha = .7)+ # plotting points with stroke
-  theme_bw(base_family = "Verdana") +
+prev <- ggplot() +
+  geom_sf(data = m_1_sf, col = "black", lwd = 0.8, lty = 1, alpha = 0) +
+  geom_sf(data = m_0_sf, col = "black", lwd = 1, lty = 1, alpha = 0) +
+  coord_sf(datum = sf::st_crs(4326))+
+  geom_point(data = data, aes(LONG, LAT, fill = prevalence), color = "black", size = 2, stroke = .5, shape = 21, alpha = .7)+ # plotting points with stroke
+  theme_void(base_family = "Arial") +
   scale_fill_gradientn(colours = mypalette(100)) +
   xlab("Logitude") + ylab("Latitude") + labs(fill = "Nodule prevalence (%)") + theme(legend.position = "bottom", legend.key.size = unit(2, 'cm'),
                                                                                      #change legend key size
         legend.key.height = unit(.25, 'cm'), #change legend key height
-        legend.key.width = unit(1, 'cm'))
-
+        legend.key.width = unit(1, 'cm')) +
+  theme(legend.position = "bottom", legend.key.size = unit(2, 'cm'), #change legend key size
+        legend.key.height = unit(.5, 'cm'), #change legend key height
+        legend.key.width = unit(1.5, 'cm')) +
+  guides(fill = guide_colourbar(title.position="top", title.hjust = 0.5)) +  
+  annotation_scale(location = "br", width_hint = 0.5) + #change legend key size 
+  annotation_north_arrow(location = "tl", which_north = "true",
+                       pad_x = unit(0.15, "in"), pad_y = unit(0.25, "in"),
+                       style = north_arrow_fancy_orienteering)
 prev
 
 # prevalence histogram
-prev_hist <- qplot(data$prevalence) + xlab("Nodule prevalence (%)") + ylab("Frequency") + theme_bw(base_family = "Verdana", base_size = 16)
-
-prev_hist
+hist(data$prevalence, main = "",
+     xlab="Nodule prevalence (%)", ylab = ("Frequency"),
+     border="black", 
+     col="darkgrey",
+     las=1, 
+     breaks=30)
 ```
 
 
@@ -274,7 +388,7 @@ p
 + `drain direction` not selected while all other selected.
 
 ### Sociodemographic data
-```{r}
+```{r, warning=FALSE}
 sociodem_data_long <- to_long(data = sociodem_data)
 sociodem_model1 <- lm(prevalence ~., data = sociodem_data);  # summary(sociodem_model1)
 vif(sociodem_model1)
@@ -319,7 +433,9 @@ vif(selected_covs_model1)
 selected_covs_data_2 <- selected_covs_data %>% as.data.table()
 col_names <- c("ELV","ADR", "IST", "PWTQ", "PST","PWMQ", "PCQ","NDVI","DTR","FAC","SLP","SLM","PDT", "NLT", "PHI", "PREV")
 selected_covs_data_2 <- selected_covs_data_2 %>% setnames(col_names) %>% data.frame()
-p_corr2 <- ggcorr(selected_covs_data_2[, 1:ncol(selected_covs_data_2)-1], palette = "RdBu", label = TRUE)
+p_corr2 <- ggcorr(selected_covs_data_2[, 1:ncol(selected_covs_data_2)-1], palette = "RdBu", label = TRUE, name = "Pearson correlation", legend.position = "left", legend.size = "12")
+p_corr2 <- p_corr2 + theme(legend.title = element_text(face = "bold"), legend.justification = c(1, 0),
+        legend.position = c(0.3, 0.5)) + guides(fill = guide_colorbar(title.position = "top", title.hjust = 0.5))
 p_corr2
 ```
 
