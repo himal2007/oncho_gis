@@ -77,6 +77,7 @@ eth_prev_nodule <- eth_prev_site_2 %>% filter(Method_2 == "Nodule palpation")
 ```
 + Finding values from the same locations
 ```{r}
+#df = dataframe object with longitude and latitude coordinates named as `LONG` and `LAT`
 find_duplicate <- function(df){
   i <- duplicated(df[, c("LONG", "LAT")])
   long_dup <- df[i, ]$LONG
@@ -375,7 +376,7 @@ vif(vegind_model1)
 p <- ggpairs(vegind_data[, 1:ncol(vegind_data)-1])
 p
 ```
-+ The range of `EVI` does not seem to be correct. `NDVI` selected.
++ `EVI` and `NDVI` seems to have almost perfect correlation. `NDVI` selected.
 
 ### Hydrological data
 ```{r}
