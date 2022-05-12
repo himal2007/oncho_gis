@@ -10,7 +10,7 @@ output:
 ---
 
 ```{r setup, echo=FALSE}
-knitr::opts_knit$set(root.dir = "C:/Users/User/OneDrive - LA TROBE UNIVERSITY/oncho_git/oncho_gis")
+knitr::opts_knit$set(root.dir = "C:/Users/User/OneDrive - LA TROBE UNIVERSITY/oncho_gis")
 ```
 
 ## Introduction
@@ -22,13 +22,17 @@ This script can be used for following purpose:
 
 3. Creating uncertainty bivariate map
 
-4. Aggregated map based on health districts
+4. Creating exceedance probability map
 
-5. Relationship profile between environmental variables and the predicted prevalence
+5. Aggregated map based on health districts: mean prevalence, range, case numbers.
+
+6. Relationship profile between environmental variables and the predicted prevalence 
+
+7. Running the regular binomial model 
 
 ## Load libraries
 ```{r, message=FALSE, error=FALSE, tidy=TRUE, warning=FALSE}
-extrafont::loadfonts(device="win")
+extrafont::loadfonts(device="win", quiet = TRUE)
 ```
 
 ```{r, message=FALSE, error=FALSE, tidy=TRUE, warning=FALSE}
@@ -54,6 +58,7 @@ suppressMessages({library(tidyverse);
   library(XML);
   library(maps);
   library(sp);
+  library(ggspatial);
   })
 ```
 
@@ -181,14 +186,19 @@ prev_ul <- res$summary.fitted.values[index, "0.975quant"]
 prev_sd <-  res$summary.fitted.values[index, "sd"]
 
 summary(res$summary.fitted.values[index,])
+```
 
+```{r}
+load("data/220507_ZIB1_maps.RData")
 ### Custom function to rasterize the predicted prevalence
 raster_prev <- function(prev_mean){
   r_prev_mean <- rasterize(
     x = coop, y = ra, field = prev_mean,
     fun = mean)
 }
+```
 
+```{r, eval = FALSE}
 r_prev_mean <- raster_prev(prev_mean = prev_mean)
 r_prev_ul <- raster_prev(prev_ul)
 r_prev_ll <- raster_prev(prev_ll)
@@ -207,7 +217,7 @@ p_mean <- tm_shape(r_prev_mean*100) +
     tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
     tm_compass(type = "arrow", position = c("left", "top")) +
     tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c("right", "bottom")) +
-    tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Verdana")
+    tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Arial")
 p_mean
 
 
@@ -217,7 +227,7 @@ p_UL <- tm_shape(r_prev_ul*100) +
   tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
   # tm_compass(type = "8star", position = c("left", "top")) +
   tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c("right", "bottom")) +
-  tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Verdana")
+  tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Arial")
 
 
 p_LL <- tm_shape(r_prev_ll*100) + 
@@ -226,7 +236,7 @@ p_LL <- tm_shape(r_prev_ll*100) +
   tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
   # tm_compass(type = "8star", position = c("left", "top")) +
   # tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c("right", "bottom")) +
-  tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Verdana")
+  tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Arial")
 
 tmap_arrange(p_LL, p_UL, ncol = 1)
 ```
@@ -244,7 +254,7 @@ p <- tm_shape(r_prev_sd*100) +
   tm_symbols(col = "black", shape = 3, alpha = .5, size = .07, legend.shape.show = T) +
   tm_compass(type = "arrow", position = c("left", "top")) +
   tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c("right", "bottom")) +
-  tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Verdana")
+  tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Arial")
 p
 ```
 
@@ -312,12 +322,161 @@ plot(bivmap,frame.plot=F,axes=F,box=F,add=F,legend=F,col=as.vector(col.matrix))
 plot(st_geometry(m_0), add= T, lwd = 4)
 ```
 
+### Creating exceedance probability map
 
-### Aggregated map on district level
+```{r, eval = FALSE}
+excprob_20 <- sapply(res$marginals.fitted.values[index],
+                  FUN = function(marg){1-inla.pmarginal(q = 0.20, marginal = marg)})
+raster_excprob_20 <- raster_prev(excprob_20)
+```
+
+```{r}
+pal <- hcl.colors(100, palette = "RdYlBu", rev =TRUE)
+
+
+excprob_20_map <- tm_shape(raster_excprob_20) + 
+  tm_raster(title="P (nodule prevalence > 20%)", alpha = 1, palette = pal, legend.is.portrait = T, style = "cont", midpoint = 0.5) +
+  tm_shape(m)+
+  tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
+  tm_compass(type = "arrow", position = c("left", "top")) +
+  tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c("right", "bottom")) +
+  tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Arial")
+excprob_20_map
+```
+
+### Predicting case numbers
+```{r}
+eth_pop_count2012 <- raster("data/eth_ppp_2012_1km_Aggregated_UNadj.tif")
+eth_pop_count2012 %>% values() %>% sum(na.rm = t)  # actual value
+
+# custom function for reprojection
+reproj <- function(tbc, c){
+  tbc <- projectRaster(tbc, c)
+  tbc <- resample(tbc, c)
+  tbc <- mask(tbc, c)
+}
+
+load("data/220507_case_numbers.RData")
+```
+
+```{r, eval = FALSE}
+eth_pop_count <- reproj(eth_pop_count2012, covariates[[1]])
+names(eth_pop_count) <- "eth_popcount_2012"
+```
+
+```{r}
+eth_popcount_5km <-  aggregate(eth_pop_count, fact = 5, fun = sum, na.rm = TRUE) # aggregating to 5 km
+```
+
++ Excluding urban areas
+```{r}
+# Custom function for reporjective categorical rasters
+reproj_cat <- function(tbc, c){
+  tbc <- projectRaster(tbc, c, method = "ngb")
+  tbc <- resample(tbc, c, method = "ngb")
+  tbc <- mask(tbc, c)
+}
+```
+
+```{r}
+rur_urb_eth2015 <- raster("data/220401_rurban_eth_2015_1km.tif")
+rur_urb_eth2015 %>% values() %>% as.factor() %>% summary()
+```
+
+```{r, eval = FALSE}
+rururb_eth2015_reproj <- reproj_cat(rur_urb_eth2015, covariates[[1]])
+rururb_eth2015_reproj %>% values() %>% as.factor() %>% summary()
+```
+
+```{r}
+rur_urb_eth2015_reproj_5km <-  aggregate(rururb_eth2015_reproj, fact = 5, fun = modal, na.rm = TRUE)
+rur_urb_eth2015_reproj_5km %>% values() %>% as.factor() %>% summary()
+
+# 2: semi-urban; 3: urban
+rururb_nourban_5km <- reclassify(rur_urb_eth2015_reproj_5km, c(-Inf, 0, 1, 
+                                                               0, 1, 1,
+                                                                  1, Inf, NA))
+rururb_nourban_5km[] %>% as.factor %>% summary
+```
+
+```{r}
+eth_popcount2012_5km_nourban <- eth_popcount_5km * rururb_nourban_5km
+eth_popcount2012_5km_nourban %>% values() %>% sum(na.rm = T)
+# Number of cases
+mean_case <- eth_popcount2012_5km_nourban * r_prev_mean
+mean_case %>% values() %>% sum(na.rm = T)
+
+LL_case <- eth_popcount2012_5km_nourban * r_prev_ll
+LL_case %>% values() %>% sum(na.rm = T)
+
+UL_case <- eth_popcount2012_5km_nourban * r_prev_ul
+UL_case %>% values() %>% sum(na.rm = T)
+```
+
 ```{r}
 eth_st2 <- getData(name = "GADM", country = "ETH", level = 3)
 eth_sf2 <- eth_st2 %>% st_as_sf()
 
+mean_cases <- exactextractr::exact_extract(mean_case, eth_sf2, fun = "sum") # faster
+eth_sf2$mean_cases <- mean_cases/1000
+
+LL_cases <- exactextractr::exact_extract(LL_case, eth_sf2, fun = "sum") # faster
+eth_sf2$LL_cases <- LL_cases/1000
+
+UL_cases <- exactextractr::exact_extract(UL_case, eth_sf2, fun = "sum") # faster
+eth_sf2$UL_cases <- UL_cases/1000
+```
+
+```{r}
+mypalette <- colorRampPalette((brewer.pal(9, "Reds")))
+mean_agg_cases <- ggplot()+
+  geom_sf(data = eth_sf2, aes(fill = mean_cases), col = "black", lwd = .3) +
+  geom_sf(data = m_0, col = "black", lwd = .8, alpha = 0) + 
+  # scale_fill_gradientn(colours = mypalette(120), limits = c(0,120), breaks = seq(0,120, 20)) +
+    scale_fill_gradientn(colours = mypalette(100)) +
+  labs(fill = "Estimated aggregated cases, mean (x1000)") +
+  theme_void(base_family = "Arial") +
+  theme(legend.position = "bottom", legend.key.size = unit(2, 'cm'), #change legend key size
+        legend.key.height = unit(.5, 'cm'), #change legend key height
+        legend.key.width = unit(1.5, 'cm')) +
+  guides(fill = guide_colourbar(title.position="top", title.hjust = 0.5)) +  annotation_scale(location = "br", width_hint = 0.5)  +
+  annotation_north_arrow(location = "tl", which_north = "true",
+        pad_x = unit(0.15, "in"), pad_y = unit(0.25, "in"),
+        style = north_arrow_fancy_orienteering)
+
+
+LL_agg_cases <- ggplot()+
+  geom_sf(data = eth_sf2, aes(fill = LL_cases), col = "black", lwd = .3) +
+  geom_sf(data = m_0, col = "black", lwd = .8, alpha = 0) + 
+  # scale_fill_gradientn(colours = mypalette(120), limits = c(0,120), breaks = seq(0,120, 20)) +
+  scale_fill_gradientn(colours = mypalette(100)) +
+  labs(fill = "Estimated aggregated cases, Lower limit (x1000)") +
+  theme_void(base_family = "Arial") +
+  theme(legend.position = "bottom", legend.key.size = unit(2, 'cm'), #change legend key size
+        legend.key.height = unit(.5, 'cm'), #change legend key height
+        legend.key.width = unit(1.5, 'cm')) +
+  guides(fill = guide_colourbar(title.position="top", title.hjust = 0.5)) +  annotation_scale(location = "br", width_hint = 0.5)
+
+UL_agg_cases <- ggplot()+
+  geom_sf(data = eth_sf2, aes(fill = UL_cases), col = "black", lwd = .3) +
+  geom_sf(data = m_0, col = "black", lwd = .8, alpha = 0) + 
+  scale_fill_gradientn(colours = mypalette(120), limits = c(0,120), breaks = seq(0,120, 20)) +
+  # scale_fill_gradientn(colours = mypalette(100)) +
+  labs(fill = "Estimated aggregated cases, Upper limit (x1000)") +
+  theme_void(base_family = "Arial") +
+  theme(legend.position = "bottom", legend.key.size = unit(2, 'cm'), #change legend key size
+        legend.key.height = unit(.5, 'cm'), #change legend key height
+        legend.key.width = unit(1.5, 'cm')) +
+  guides(fill = guide_colourbar(title.position="top", title.hjust = 0.5)) +  annotation_scale(location = "br", width_hint = 0.5)
+
+library(patchwork)
+p_agg <- mean_agg_cases + (UL_agg_cases/LL_agg_cases) + plot_annotation(tag_levels = "A")
+p_agg
+```
+
+
+### Aggregated map on district level
+```{r}
 mean_prev <- exactextractr::exact_extract(r_prev_mean *100, eth_sf2, fun = "mean") # faster
 eth_sf2$INLA_prev_mean <- mean_prev
 
@@ -339,7 +498,7 @@ prev <- ggplot()+
   geom_sf(data = eth_sf2, aes(fill = INLA_prev_mean), col = "black", lwd = .3) +
   scale_fill_gradientn(colours = mypalette(100)) +
   labs(fill = "Mean prevalence (%)") +
-  theme_void(base_family = "Verdana") +
+  theme_void(base_family = "Arial") +
   theme(legend.position = "bottom", legend.key.size = unit(2, 'cm'), #change legend key size
         legend.key.height = unit(.5, 'cm'), #change legend key height
         legend.key.width = unit(1.5, 'cm')) +
@@ -351,7 +510,7 @@ range <- ggplot()+
   geom_sf(data = eth_sf2, aes(fill = range), col = "black", lwd = .3) +
   scale_fill_gradientn(colours = mypalette(100)) +
   labs(fill = "Range of Mean prevalence (%)") +
-  theme_void(base_family = "Verdana") +
+  theme_void(base_family = "Arial") +
   theme(legend.position = "bottom", legend.key.size = unit(2, 'cm'), #change legend key size
         legend.key.height = unit(.5, 'cm'), #change legend key height
         legend.key.width = unit(1.5, 'cm')) +
@@ -381,7 +540,7 @@ levels(data_p_long$covariates) <- c("Slope", "Isothermality", "Precipitation sea
 ```{r, warning=FALSE, message=FALSE}
 p <- ggplot(data_p_long, aes(values, pred_prev)) +
   geom_smooth(method = "gam") + facet_wrap(~covariates, scales = "free", nrow = 2) + # default method is gam
-  theme_bw(base_family = "Verdana", base_size = 12) +
+  theme_bw(base_family = "Arial", base_size = 12) +
   xlab("Values") + ylab("Onchocerciasis prevalence")
 p
 ```
@@ -435,7 +594,7 @@ p_mean <- tm_shape(xmean_ras2) +
   tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
   tm_compass(type = "arrow", position = c(.1, .75)) +
   # tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c(.6, .1)) +
-  tm_layout(legend.outside = FALSE, legend.position = c(.61, .65), frame = FALSE, fontfamily = "Verdana")
+  tm_layout(legend.outside = FALSE, legend.position = c(.61, .65), frame = FALSE, fontfamily = "Arial")
 
 
 p_var <- tm_shape(xsd_ras2) + 
@@ -444,7 +603,7 @@ p_var <- tm_shape(xsd_ras2) +
   tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
   # tm_compass(type = "arrow", position = c(.1, .75)) +
   tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c(.6, .12)) +
-  tm_layout(legend.outside = FALSE, legend.position = c(.61, .65), frame = FALSE, fontfamily = "Verdana")
+  tm_layout(legend.outside = FALSE, legend.position = c(.61, .65), frame = FALSE, fontfamily = "Arial")
 
 spatial_field <- tmap_arrange(p_mean, p_var, ncol = 2, widths = c(1,1), heights = 1)
 
@@ -475,12 +634,131 @@ p <-ggplot(data2) +
   geom_abline(slope=1, intercept=0, linetype = "dashed") +
   ggpubr::stat_cor(mapping = aes(PREV, predicted_mean_prev), data = data2, method = "spearman", label.x = 50, label.y = 5) +
   scale_color_gradientn(colours = mypalette(100)) + 
-  theme_bw(base_family = "Verdana", base_size = 12) +
+  theme_bw(base_family = "Arial", base_size = 12) +
   xlab("Observed prevalence(%)") +
   ylab("Predicted prevalence (%)") + labs(color = "Absolute error") +
   theme(legend.position = "bottom", legend.key.size = unit(1, 'cm'),                                                                       #change legend key size
         legend.key.height = unit(.5, 'cm'), #change legend key height
         legend.key.width = unit(1, 'cm')) #+ facet_wrap(~variables)
 p
+```
+
+## Running the regular binomial model
+```{r, eval = FALSE}
+res <- inla(predterms,
+            family = "binomial", Ntrials = numtrials,
+            data = inla.stack.data(datastack, spde = spde),
+            control.family = list(link = "logit"),
+            control.compute = list(dic = TRUE, waic = TRUE,
+                                   cpo = TRUE, config = TRUE,
+                                   openmp.strategy="huge"),
+            control.predictor = list(
+              compute = TRUE, link = 1,
+              A = inla.stack.A(datastack)
+            )
+)
+```
+
+```{r}
+res <- readRDS("data/inla_point_res_5km_mesh5_binomial.rds")
+```
+
+```{r}
+# Mapping prediction ------------------------------------------------------
+index <- inla.stack.index(stack = datastack, tag = "pred")$data
+
+prev_mean <- res$summary.fitted.values[index, "mean"]
+prev_ll <- res$summary.fitted.values[index, "0.025quant"]
+prev_ul <- res$summary.fitted.values[index, "0.975quant"]
+prev_sd <-  res$summary.fitted.values[index, "sd"]
+
+summary(res$summary.fitted.values[index,])
+load("data/220508_INLA_model_run_5km_binom.RData")
+```
+
+```{r, eval = FALSE}
+r_prev_mean <- raster_prev(prev_mean = prev_mean)
+r_prev_ul <- raster_prev(prev_ul)
+r_prev_ll <- raster_prev(prev_ll)
+r_prev_sd <- raster_prev(prev_sd)
+```
+
++ Mean prevalence
+```{r}
+pal <- hcl.colors(100, palette = "Reds", rev =TRUE)
+
+p_mean <- tm_shape(r_prev_mean*100) + 
+  tm_raster(title="Binomial: Mean Prevalence (%)", alpha = 1, palette = pal, legend.is.portrait = F, style = "cont", midpoint = 50) +
+  tm_shape(m)+
+  tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
+  tm_compass(type = "arrow", position = c("left", "top")) +
+  tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c("right", "bottom")) +
+  tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Arial")
+p_mean
+```
+
++ Prevalence upper limit
+```{r}
+p_UL <- tm_shape(r_prev_ul*100) + 
+  tm_raster(title="Binomial: Prevalence (%), UL", alpha = 1, palette = pal, legend.is.portrait = T, style = "cont", midpoint = 50) +
+  tm_shape(m)+
+  tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
+  tm_compass(type = "arrow", position = c("left", "top")) +
+  tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c("right", "bottom")) +
+  tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Arial")
+p_UL
+```
+
++ Prevalence lower limit
+```{r}
+p_LL <- tm_shape(r_prev_ll*100) + 
+  tm_raster(title="Binomial: Prevalence (%), LL", alpha = 1, palette = pal, legend.is.portrait = T, style = "cont", midpoint = 50) +
+  tm_shape(m)+
+  tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
+  tm_compass(type = "arrow", position = c("left", "top")) +
+  tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c("right", "bottom")) +
+  tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Arial")
+p_LL
+```
+
++ Prevalence uncertainty
+```{r}
+pal <- hcl.colors(100, palette = "Blues", rev =TRUE)
+p <- tm_shape(r_prev_sd*100) + 
+  tm_raster(title="Prevalence(SD)", alpha = .8, palette = pal, legend.is.portrait = T, style = "cont") +
+  tm_shape(m_0)+
+  tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
+  tm_shape(data_sf) + 
+  tm_symbols(col = "black", shape = 3, alpha = .5, size = .07, legend.shape.show = T) +
+  tm_compass(type = "arrow", position = c("left", "top")) +
+  tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c("right", "bottom")) +
+  tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Arial")
+p
+```
+
+
+```{r, eval = FALSE}
+# Mapping exceedance probabilities ----------------------------------------
+
+index <- inla.stack.index(stack = datastack, tag = "pred")$data
+marg <- res$marginals.fitted.values[index][[1]]
+1 - inla.pmarginal(q = 0.20, marginal = marg)
+
+## P(Prevalence>20%)
+excprob_20 <- sapply(res$marginals.fitted.values[index],
+                  FUN = function(marg){1-inla.pmarginal(q = 0.20, marginal = marg)})
+```
+
+```{r}
+pal <- hcl.colors(100, palette = "RdYlBu", rev =TRUE)
+
+excprob_20_map <- tm_shape(raster_excprob_20) + 
+  tm_raster(title="P (nodule prevalence > 20%)", alpha = 1, palette = pal, legend.is.portrait = T, style = "cont", midpoint = 0.5) +
+  tm_shape(m)+
+  tm_borders(lty = 1, lwd = 2, col = "black", alpha = .9) +
+  tm_compass(type = "arrow", position = c("left", "top")) +
+  tm_scale_bar(breaks = c(0, 100, 200, 400), text.size = .8, position = c("right", "bottom")) +
+  tm_layout(legend.outside = FALSE, legend.position = c("right", "top"), frame = FALSE, fontfamily = "Arial")
+excprob_20_map
 ```
 
