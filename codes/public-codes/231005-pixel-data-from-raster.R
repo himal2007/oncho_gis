@@ -1,5 +1,7 @@
-# Function to get raster pixel coordinates, values, and region names from a shapefile
-
+## Function to get raster pixel coordinates, values, and region names from a shapefile
+## Usage: result <- get_raster_coordinates_and_regions(raster_data, shapefile_data)
+## where 'raster_data'  and 'shapefile_data', both have the same crs.
+## The column names in the resulting data frame are based on the shapefile's column names which can be viewed with head(shapefile_data).
 get_raster_coordinates_and_regions <- function(raster_data, shapefile_data) {
   
   # Convert raster data to sf point dataframe with longitude and latitude
@@ -12,12 +14,13 @@ get_raster_coordinates_and_regions <- function(raster_data, shapefile_data) {
 
   # Add coordinates, values, and NAMES to the data frame
   result_df <- points_regions %>% 
-    select(NAME_1, NAME_2, NAME_3) %>%
-    mutate(longitude = raster_points[,2], latitude = raster_points[,3], values = raster_points[,1])
+    select(NAME_1, NAME_2, NAME_3) %>% # Adjust the column names as per the shape file
+    mutate(longitude = raster_points[,1], latitude = raster_points[,2], values = raster_points[,3])
 
 
   return(result_df)
 }
+
 
 #+++FUNCTION USAGE+++
 
