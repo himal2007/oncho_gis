@@ -10,6 +10,6 @@ The repository consists of the markdown files/codes for the following aspects of
 
 3. Running the best model and visualising the model prediction - [Workbook 3](https://github.com/himal2007/oncho_gis/blob/master/codes/3_run_best_model_n_predict.md)
 
-The paper is now available in PLoS NTD.
-Geospatial modeling of pre-intervention nodule prevalence of _Onchocerca volvulus_ in Ethiopia as an aid to onchocerciasis elimination
-Shrestha H, McCulloch K, Hedtke SM, Grant WN (2022) Geospatial modeling of pre-intervention nodule prevalence of Onchocerca volvulus in Ethiopia as an aid to onchocerciasis elimination. PLOS Neglected Tropical Diseases 16(7): e0010620. [https://doi.org/10.1371/journal.pntd.0010620](https://doi.org/10.1371/journal.pntd.0010620)
+The paper is now available in PLoS NTD. 
+
+📜🔗: Shrestha H, McCulloch K, Hedtke SM, Grant WN (2022) Geospatial modeling of pre-intervention nodule prevalence of Onchocerca volvulus in Ethiopia as an aid to onchocerciasis elimination. PLOS Neglected Tropical Diseases 16(7): e0010620. [https://doi.org/10.1371/journal.pntd.0010620](https://doi.org/10.1371/journal.pntd.0010620)
